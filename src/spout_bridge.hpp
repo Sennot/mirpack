@@ -5,13 +5,13 @@ namespace cleanfeed::bridge {
     void destroy(void* handle);
     void setSenderName(void* handle, char const* name);
     void releaseSender(void* handle);
-    bool sendTexture(
+    bool sendFbo(
         void* handle,
-        unsigned int texture,
-        unsigned int target,
+        unsigned int fbo,
         unsigned int width,
         unsigned int height,
-        bool invert,
-        unsigned int hostFbo
+        bool invert
     );
+    long senderFrame(void* handle);
+    int shareMode(void* handle);
 }

@@ -19,17 +19,21 @@ namespace cleanfeed::bridge {
         if (handle) static_cast<Spout*>(handle)->ReleaseSender();
     }
 
-    bool sendTexture(
+    bool sendFbo(
         void* handle,
-        unsigned int texture,
-        unsigned int target,
+        unsigned int fbo,
         unsigned int width,
         unsigned int height,
-        bool invert,
-        unsigned int hostFbo
+        bool invert
     ) {
-        return handle && static_cast<Spout*>(handle)->SendTexture(
-            texture, target, width, height, invert, hostFbo
-        );
+        return handle && static_cast<Spout*>(handle)->SendFbo(fbo, width, height, invert);
+    }
+
+    long senderFrame(void* handle) {
+        return handle ? static_cast<Spout*>(handle)->GetSenderFrame() : 0;
+    }
+
+    int shareMode(void* handle) {
+        return handle ? static_cast<Spout*>(handle)->GetShareMode() : -1;
     }
 }

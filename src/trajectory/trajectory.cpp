@@ -107,6 +107,12 @@ namespace cleanfeed {
     PlayerObject* Trajectory::createFakePlayer(GJBaseGameLayer* layer, std::string const& id) {
         auto* player = PlayerObject::create(1, 1, layer, layer, true);
         if (!player) return nullptr;
+
+        // copyAttributes aliases engine-managed PlayerObject internals. The
+        // original Silicate implementation deliberately retains simulation
+        // players for the process lifetime so scene teardown never destroys an
+        // aliased object. Releasing one here crashes in PlayerObject::~PlayerObject.
+        player->retain();
         player->setPosition({0.f, 105.f});
         player->setVisible(false);
         player->setID(id);

@@ -43,14 +43,13 @@ namespace cleanfeed {
     class $modify(CleanFeedView, cocos2d::CCEGLView) {
         static void onModify(auto& self) {
             constexpr auto hook = "cocos2d::CCEGLView::swapBuffers";
-            (void)self.setHookPriority(hook, geode::Priority::Last);
+            (void)self.setHookPriority(hook, geode::Priority::NormalPre);
 
-            // Mega Hack renders ImGui before delegating to swapBuffers. Running
-            // immediately after its hook puts capture after ImGui but before the
-            // real buffer swap. Both IDs exist in current Windows distributions.
+            // Capture the completed GD framebuffer immediately before Mega Hack
+            // adds its own overlay. Both IDs exist in current Windows distributions.
             for (auto const id : {"absolllute.hackmega", "absolllute.megahack"}) {
                 if (auto* mod = Loader::get()->getInstalledMod(id)) {
-                    (void)self.setHookPriorityAfter(hook, mod);
+                    (void)self.setHookPriorityBeforePre(hook, mod);
                 }
             }
         }

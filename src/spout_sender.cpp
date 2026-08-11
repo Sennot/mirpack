@@ -10,53 +10,38 @@
 using namespace geode::prelude;
 
 namespace cleanfeed {
+    namespace {
+        struct OpenGLState final {
+            GLint readFbo = 0;
+            GLint drawFbo = 0;
+            GLint readBuffer = 0;
+            GLint drawBuffer = 0;
+            GLint activeTexture = 0;
+            GLint texture2D = 0;
+
+            OpenGLState() {
+                glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFbo);
+                glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
+                glGetIntegerv(GL_READ_BUFFER, &readBuffer);
+                glGetIntegerv(GL_DRAW_BUFFER, &drawBuffer);
+                glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
+                glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture2D);
+            }
+
+            ~OpenGLState() {
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(readFbo));
+                glReadBuffer(static_cast<GLenum>(readBuffer));
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(drawFbo));
+                glDrawBuffer(static_cast<GLenum>(drawBuffer));
+                glActiveTexture(static_cast<GLenum>(activeTexture));
+                glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(texture2D));
+            }
+        };
+    }
+
     SpoutSender& SpoutSender::get() {
         static auto* instance = new SpoutSender();
         return *instance;
-    }
-
-    bool SpoutSender::ensureTarget(unsigned int width, unsigned int height) {
-        if (m_fbo && m_texture && width == m_width && height == m_height) return true;
-
-        destroyTarget();
-        if (!width || !height) return false;
-
-        GLint previousFbo = 0;
-        GLint previousTexture = 0;
-        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFbo);
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
-
-        glGenTextures(1, &m_texture);
-        glBindTexture(GL_TEXTURE_2D, m_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(width),
-                     static_cast<GLsizei>(height), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-
-        glGenFramebuffers(1, &m_fbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_texture, 0);
-
-        auto const complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
-        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFbo));
-        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
-
-        if (!complete) {
-            if (!m_warnedIncomplete) {
-                log::error("Unable to create the clean-feed OpenGL framebuffer");
-                m_warnedIncomplete = true;
-            }
-            destroyTarget();
-            return false;
-        }
-
-        m_width = width;
-        m_height = height;
-        m_warnedIncomplete = false;
-        log::info("Spout2 clean-feed target created: {}x{}", width, height);
-        return true;
     }
 
     void SpoutSender::captureBackBuffer() {
@@ -70,7 +55,7 @@ namespace cleanfeed {
         glGetIntegerv(GL_VIEWPORT, viewport);
         auto const width = static_cast<unsigned int>(std::max(0, viewport[2]));
         auto const height = static_cast<unsigned int>(std::max(0, viewport[3]));
-        if (!ensureTarget(width, height)) return;
+        if (!width || !height) return;
 
         auto const desiredName = settings::senderName();
         if (desiredName != m_senderName) {
@@ -80,55 +65,52 @@ namespace cleanfeed {
             bridge::setSenderName(m_spout, m_senderName.c_str());
         }
 
-        GLint previousFbo = 0;
-        GLint previousTexture = 0;
-        GLint previousReadBuffer = 0;
-        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFbo);
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
-        glGetIntegerv(GL_READ_BUFFER, &previousReadBuffer);
+        OpenGLState const state;
+        auto const captureFbo = static_cast<GLuint>(state.drawFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
+        glReadBuffer(captureFbo == 0 ? GL_BACK : static_cast<GLenum>(state.drawBuffer));
 
-        glReadBuffer(previousFbo == 0 ? GL_BACK : GL_COLOR_ATTACHMENT0);
-        glBindTexture(GL_TEXTURE_2D, m_texture);
-        glCopyTexSubImage2D(
-            GL_TEXTURE_2D, 0, 0, 0,
-            viewport[0], viewport[1], static_cast<GLsizei>(m_width), static_cast<GLsizei>(m_height)
-        );
-        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
-        glReadBuffer(static_cast<GLenum>(previousReadBuffer));
+        auto const frameBefore = bridge::senderFrame(m_spout);
+        auto const sent = bridge::sendFbo(m_spout, captureFbo, width, height, true);
+        auto const frameAfter = bridge::senderFrame(m_spout);
 
-        if (!bridge::sendTexture(
-            m_spout, m_texture, GL_TEXTURE_2D, m_width, m_height, true,
-            static_cast<unsigned int>(previousFbo)
-        )) {
+        if (!sent) {
             if (!m_warnedSendFailure) {
-                log::warn("Spout2 rejected a clean-feed frame");
+                log::error("Spout2 rejected the clean-feed framebuffer");
                 m_warnedSendFailure = true;
             }
-        } else {
-            m_warnedSendFailure = false;
+            return;
         }
 
+        m_warnedSendFailure = false;
+        if (frameAfter != frameBefore) {
+            m_stalledFrames = 0;
+            if (!m_loggedPublishing) {
+                log::info(
+                    "Spout2 sender '{}' is publishing {}x{} frames (share mode {})",
+                    m_senderName, width, height, bridge::shareMode(m_spout)
+                );
+                m_loggedPublishing = true;
+            }
+        } else if (++m_stalledFrames == 120) {
+            log::error(
+                "Spout2 sender '{}' exists but its frame counter is not advancing",
+                m_senderName
+            );
+        }
     }
 
     void SpoutSender::releaseSender() {
         if (!m_senderName.empty()) bridge::releaseSender(m_spout);
         m_senderName.clear();
         m_warnedSendFailure = false;
-    }
-
-    void SpoutSender::destroyTarget() {
-        if (m_texture) glDeleteTextures(1, &m_texture);
-        if (m_fbo) glDeleteFramebuffers(1, &m_fbo);
-        m_texture = 0;
-        m_fbo = 0;
-        m_width = 0;
-        m_height = 0;
+        m_loggedPublishing = false;
+        m_stalledFrames = 0;
     }
 
     void SpoutSender::shutdown() {
         releaseSender();
         bridge::destroy(m_spout);
         m_spout = nullptr;
-        destroyTarget();
     }
 }
