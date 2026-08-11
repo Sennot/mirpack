@@ -21,7 +21,8 @@ jobs:
         id: build
         uses: geode-sdk/build-geode-mod@main
         with:
-          sdk: latest
+          # Keep CI aligned with mod.json and the loader version this mod targets.
+          sdk: 5.8.2
           target: Win64
           build-config: RelWithDebInfo
           export-pdb: true
