@@ -59,6 +59,14 @@ namespace cleanfeed {
             bool operator==(Signature const&) const = default;
         };
 
+        struct BranchState {
+            TrajectoryDrawNode* node = nullptr;
+            Signature signature;
+            cocos2d::CCPoint anchor{};
+            std::chrono::steady_clock::time_point nextRefresh{};
+            bool calculated = false;
+        };
+
         struct Action {
             int delay = 0;
             std::function<void()> function;
@@ -67,6 +75,16 @@ namespace cleanfeed {
 
         PlayerObject* createFakePlayer(GJBaseGameLayer* layer, std::string const& id);
         Signature computeSignature(GJBaseGameLayer* layer) const;
+        cocos2d::CCPoint currentAnchor(GJBaseGameLayer* layer) const;
+        bool needsImmediateRefresh(Signature const& current, Signature const& previous) const;
+        void positionBranch(BranchState& branch, cocos2d::CCPoint const& anchor);
+        void calculateBranch(
+            GJBaseGameLayer* layer,
+            BranchState& branch,
+            Signature const& signature,
+            int mode,
+            bool active
+        );
         void simulate(GJBaseGameLayer* layer, bool player1, int mode, bool clickBothPlayers);
         void runPrediction(
             GJBaseGameLayer* layer,
@@ -86,22 +104,22 @@ namespace cleanfeed {
         void clearActivatedObjects();
 
         GJBaseGameLayer* m_layer = nullptr;
-        TrajectoryDrawNode* m_node = nullptr;
+        BranchState m_holdBranch;
+        BranchState m_releaseBranch;
+        TrajectoryDrawNode* m_activeNode = nullptr;
         PlayerObject* m_fakePlayer1 = nullptr;
         PlayerObject* m_fakePlayer2 = nullptr;
         std::unordered_set<uintptr_t> m_activatedObjectsP1;
         std::unordered_set<uintptr_t> m_activatedObjectsP2;
         std::vector<Action> m_actions;
-        Signature m_lastSignature;
-        bool m_calculated = false;
         bool m_drawing = false;
         bool m_deadP1 = false;
         bool m_deadP2 = false;
         bool m_p1Holding = false;
         bool m_p2Holding = false;
         bool m_forceRefresh = true;
+        int m_forcedMode = Release;
         float m_physicsDt = 1.f / 240.f;
         float m_playerDelta = 0.25f;
-        std::chrono::steady_clock::time_point m_nextRefresh{};
     };
 }

@@ -1,10 +1,8 @@
 #include "spout_sender.hpp"
 
-#include "overlay.hpp"
 #include "settings.hpp"
 #include "spout_bridge.hpp"
 
-#include <Geode/binding/GJBaseGameLayer.hpp>
 #include <Geode/cocos/platform/win32/CCGL.h>
 
 using namespace geode::prelude;
@@ -45,8 +43,7 @@ namespace cleanfeed {
     }
 
     void SpoutSender::captureBackBuffer() {
-        auto* gameLayer = GJBaseGameLayer::get();
-        if (!settings::enabled() || !gameLayer || gameLayer != overlay::layer()) {
+        if (!settings::enabled()) {
             releaseSender();
             return;
         }

@@ -31,7 +31,6 @@ namespace cleanfeed {
             Trajectory::get().shutdown(layer);
             hitboxes::detach(layer);
             overlay::detach(layer);
-            SpoutSender::get().shutdown();
         }
 
         void updateOverlays(GJBaseGameLayer* layer) {
@@ -250,5 +249,7 @@ namespace cleanfeed {
 }
 
 $on_mod(Loaded) {
-    geode::log::info("Spout2 Clean Feed loaded; sender is active only inside levels and the editor");
+    geode::log::info(
+        "Spout2 Clean Feed loaded; sender captures all scenes and overlays are level-only"
+    );
 }

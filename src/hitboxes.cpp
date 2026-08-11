@@ -19,6 +19,7 @@ namespace cleanfeed::hitboxes {
         cocos2d::CCDrawNode* s_playerNode = nullptr;
         GJBaseGameLayer* s_layer = nullptr;
         Clock::time_point s_nextObjectRefresh{};
+        std::array<int, 4> s_lastView{-1, -1, -1, -1};
         bool s_objectsDirty = true;
         bool s_wasEnabled = false;
 
@@ -210,6 +211,7 @@ namespace cleanfeed::hitboxes {
         root->addChild(s_playerNode, 11);
 
         s_nextObjectRefresh = {};
+        s_lastView = {-1, -1, -1, -1};
         s_objectsDirty = true;
         s_wasEnabled = false;
     }
@@ -220,6 +222,7 @@ namespace cleanfeed::hitboxes {
         s_playerNode = nullptr;
         s_layer = nullptr;
         s_nextObjectRefresh = {};
+        s_lastView = {-1, -1, -1, -1};
         s_objectsDirty = true;
         s_wasEnabled = false;
     }
@@ -244,20 +247,32 @@ namespace cleanfeed::hitboxes {
         auto const zoom = std::max(0.01f, layer->m_gameState.m_cameraZoom);
         auto const width = settings::hitboxWidth() / zoom;
         auto const fillAlpha = settings::hitboxFillOpacity();
-        Palette const palette = {
-            .solid = settings::color("solid-color"),
-            .hazard = settings::color("hazard-color"),
-            .interactable = settings::color("interactable-color"),
-            .solidFill = settings::colorWithAlpha("solid-color", fillAlpha),
-            .hazardFill = settings::colorWithAlpha("hazard-color", fillAlpha),
-            .interactableFill = settings::colorWithAlpha("interactable-color", fillAlpha),
-        };
 
-        // Environment geometry is the expensive part on object-heavy levels.
-        // Refresh it at 30 Hz while keeping player hitboxes at the render rate.
+        auto const visibleSections = std::array{
+            layer->m_leftSectionIndex,
+            layer->m_rightSectionIndex,
+            layer->m_bottomSectionIndex,
+            layer->m_topSectionIndex,
+        };
+        if (visibleSections != s_lastView) {
+            s_lastView = visibleSections;
+            s_objectsDirty = true;
+        }
+
+        // Environment geometry runs at the display rate when it is cheap and
+        // automatically backs off on dense sections. Player boxes remain at
+        // the display rate regardless of the environment cost.
         auto const now = Clock::now();
         if (s_objectsDirty || now >= s_nextObjectRefresh) {
             auto const started = now;
+            Palette const palette = {
+                .solid = settings::color("solid-color"),
+                .hazard = settings::color("hazard-color"),
+                .interactable = settings::color("interactable-color"),
+                .solidFill = settings::colorWithAlpha("solid-color", fillAlpha),
+                .hazardFill = settings::colorWithAlpha("hazard-color", fillAlpha),
+                .interactableFill = settings::colorWithAlpha("interactable-color", fillAlpha),
+            };
             s_objectNode->clear();
             forEachVisibleObject(layer, [&](GameObject* object) {
                 drawObject(layer, object, width, palette);
@@ -265,7 +280,7 @@ namespace cleanfeed::hitboxes {
 
             auto const cost = Clock::now() - started;
             auto const basePeriod = std::chrono::duration_cast<Clock::duration>(
-                std::chrono::duration<double>(1.0 / 30.0)
+                std::chrono::duration<double>(1.0 / 60.0)
             );
             auto const adaptivePeriod = std::max(basePeriod, cost * 3);
             s_nextObjectRefresh = started + adaptivePeriod;

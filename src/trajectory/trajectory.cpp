@@ -126,18 +126,31 @@ namespace cleanfeed {
         if (!layer || !overlay::root()) return;
 
         m_layer = layer;
-        m_node = TrajectoryDrawNode::create();
-        m_node->setID("trajectory"_spr);
-        m_node->setBlendFunc({GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA});
-        overlay::root()->addChild(m_node, 20);
+        m_releaseBranch.node = TrajectoryDrawNode::create();
+        m_holdBranch.node = TrajectoryDrawNode::create();
+        if (!m_releaseBranch.node || !m_holdBranch.node) {
+            m_layer = nullptr;
+            m_releaseBranch = {};
+            m_holdBranch = {};
+            return;
+        }
+
+        m_releaseBranch.node->setID("trajectory-release"_spr);
+        m_releaseBranch.node->setBlendFunc({GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA});
+        overlay::root()->addChild(m_releaseBranch.node, 20);
+
+        m_holdBranch.node->setID("trajectory-hold"_spr);
+        m_holdBranch.node->setBlendFunc({GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA});
+        overlay::root()->addChild(m_holdBranch.node, 21);
 
         m_fakePlayer1 = createFakePlayer(layer, "trajectory-fake-player-1"_spr);
         m_fakePlayer2 = createFakePlayer(layer, "trajectory-fake-player-2"_spr);
-        m_calculated = false;
+        m_holdBranch.calculated = false;
+        m_releaseBranch.calculated = false;
         m_p1Holding = false;
         m_p2Holding = false;
         m_forceRefresh = true;
-        m_nextRefresh = {};
+        m_forcedMode = Release;
     }
 
     void Trajectory::shutdown(GJBaseGameLayer* layer) {
@@ -145,18 +158,24 @@ namespace cleanfeed {
 
         if (m_fakePlayer1 && m_fakePlayer1->getParent()) m_fakePlayer1->removeFromParent();
         if (m_fakePlayer2 && m_fakePlayer2->getParent()) m_fakePlayer2->removeFromParent();
-        if (m_node && m_node->getParent()) m_node->removeFromParent();
+        if (m_holdBranch.node && m_holdBranch.node->getParent()) {
+            m_holdBranch.node->removeFromParent();
+        }
+        if (m_releaseBranch.node && m_releaseBranch.node->getParent()) {
+            m_releaseBranch.node->removeFromParent();
+        }
 
         m_layer = nullptr;
-        m_node = nullptr;
+        m_holdBranch = {};
+        m_releaseBranch = {};
+        m_activeNode = nullptr;
         m_fakePlayer1 = nullptr;
         m_fakePlayer2 = nullptr;
         m_actions.clear();
         clearActivatedObjects();
-        m_calculated = false;
         m_drawing = false;
         m_forceRefresh = true;
-        m_nextRefresh = {};
+        m_forcedMode = Release;
     }
 
     bool Trajectory::drawing() const {
@@ -188,6 +207,7 @@ namespace cleanfeed {
         if (previous == holding) return;
         previous = holding;
         m_forceRefresh = true;
+        m_forcedMode = holding ? Hold : Release;
     }
 
     void Trajectory::rememberActivatedObject(EnhancedGameObject* object, PlayerObject* player) {
@@ -252,6 +272,95 @@ namespace cleanfeed {
         return signature;
     }
 
+    cocos2d::CCPoint Trajectory::currentAnchor(GJBaseGameLayer* layer) const {
+        if (!layer) return {};
+        if (layer->m_player1) return layer->m_player1->getPosition();
+        if (layer->m_player2) return layer->m_player2->getPosition();
+        return {};
+    }
+
+    bool Trajectory::needsImmediateRefresh(
+        Signature const& current,
+        Signature const& previous
+    ) const {
+        if (current.p1Flags != previous.p1Flags ||
+            current.p2Flags != previous.p2Flags ||
+            current.boolPack != previous.boolPack ||
+            current.timeWarp != previous.timeWarp ||
+            current.cameraZoom != previous.cameraZoom ||
+            current.lineWidth != previous.lineWidth ||
+            current.length != previous.length ||
+            current.tps != previous.tps ||
+            current.colors[0] != previous.colors[0] ||
+            current.colors[1] != previous.colors[1] ||
+            current.p1[5] != previous.p1[5] ||
+            current.p2[5] != previous.p2[5] ||
+            current.p1[6] != previous.p1[6] ||
+            current.p2[6] != previous.p2[6]) {
+            return true;
+        }
+
+        auto const movedFar = [](float const (&now)[7], float const (&before)[7]) {
+            auto const dx = now[0] - before[0];
+            auto const dy = now[1] - before[1];
+            return dx * dx + dy * dy > 48.f * 48.f ||
+                   std::abs(now[3] - before[3]) > 4.f ||
+                   std::abs(now[4] - before[4]) > 4.f;
+        };
+        return movedFar(current.p1, previous.p1) ||
+               movedFar(current.p2, previous.p2);
+    }
+
+    void Trajectory::positionBranch(
+        BranchState& branch,
+        cocos2d::CCPoint const& anchor
+    ) {
+        if (!branch.node) return;
+        branch.node->setPosition(branch.calculated ? anchor - branch.anchor : cocos2d::CCPoint{});
+    }
+
+    void Trajectory::calculateBranch(
+        GJBaseGameLayer* layer,
+        BranchState& branch,
+        Signature const& signature,
+        int mode,
+        bool active
+    ) {
+        if (!branch.node) return;
+
+        auto const started = std::chrono::steady_clock::now();
+        auto const anchor = currentAnchor(layer);
+        branch.node->setPosition({});
+        branch.node->clear();
+        m_activeNode = branch.node;
+        m_drawing = true;
+        m_physicsDt = 1.f / static_cast<float>(settings::trajectoryTps());
+        m_playerDelta = m_physicsDt * 60.f;
+
+        auto const bothPlayers = !layer->m_levelSettings->m_twoPlayerMode;
+        if (layer->m_player1) simulate(layer, true, mode, bothPlayers);
+        if (layer->m_player2 && layer->m_gameState.m_isDualMode &&
+            layer->m_levelSettings->m_twoPlayerMode) {
+            simulate(layer, false, mode, false);
+        }
+
+        m_fakePlayer1->setVisible(false);
+        m_fakePlayer2->setVisible(false);
+        m_drawing = false;
+        m_activeNode = nullptr;
+
+        branch.anchor = anchor;
+        branch.signature = signature;
+        branch.calculated = true;
+
+        auto const finished = std::chrono::steady_clock::now();
+        auto const cost = finished - started;
+        auto const basePeriod = std::chrono::duration_cast<
+            std::chrono::steady_clock::duration
+        >(std::chrono::duration<double>(active ? 1.0 / 30.0 : 1.0 / 15.0));
+        branch.nextRefresh = started + std::max(basePeriod, cost * 3);
+    }
+
     bool Trajectory::iterate(
         GJBaseGameLayer* layer,
         PlayerObject* player,
@@ -308,7 +417,7 @@ namespace cleanfeed {
 
         auto const zoom = std::max(0.01f, layer->m_gameState.m_cameraZoom);
         auto const branchScale = (mode & Release) ? 1.4f : 0.72f;
-        m_node->drawSegment(
+        m_activeNode->drawSegment(
             previousPosition, player->getPosition(),
             settings::trajectoryWidth() * branchScale / zoom, color
         );
@@ -414,7 +523,7 @@ namespace cleanfeed {
     }
 
     void Trajectory::drawHitbox(PlayerObject* player) {
-        if (!player || !m_node || !m_layer) return;
+        if (!player || !m_activeNode || !m_layer) return;
         auto const zoom = std::max(0.01f, m_layer->m_gameState.m_cameraZoom);
         auto const width = settings::hitboxWidth() / zoom;
         auto const outerColor = settings::color("player-color");
@@ -422,9 +531,9 @@ namespace cleanfeed {
         auto const rotatedColor = settings::color("player-rotated-color");
         auto const outer = shrink(player->getObjectRect(), width);
         auto const inner = shrink(player->getObjectRect(0.3f, 0.3f), width);
-        drawRotatedRect(m_node, outer, player->getRotation(), rotatedColor, width);
-        m_node->drawRect(outer, {0.f, 0.f, 0.f, 0.f}, width, outerColor);
-        m_node->drawRect(inner, {0.f, 0.f, 0.f, 0.f}, width, innerColor);
+        drawRotatedRect(m_activeNode, outer, player->getRotation(), rotatedColor, width);
+        m_activeNode->drawRect(outer, {0.f, 0.f, 0.f, 0.f}, width, outerColor);
+        m_activeNode->drawRect(inner, {0.f, 0.f, 0.f, 0.f}, width, innerColor);
     }
 
     void Trajectory::handlePortal(PlayerObject* player, GameObject* object) {
@@ -433,66 +542,101 @@ namespace cleanfeed {
     }
 
     void Trajectory::update(GJBaseGameLayer* layer) {
-        if (!layer || layer != m_layer || !m_node || !m_fakePlayer1 || !m_fakePlayer2) return;
+        if (!layer || layer != m_layer || !m_holdBranch.node ||
+            !m_releaseBranch.node || !m_fakePlayer1 || !m_fakePlayer2) {
+            return;
+        }
         m_fakePlayer1->setVisible(false);
         m_fakePlayer2->setVisible(false);
 
         if (auto* editor = LevelEditorLayer::get(); editor && editor->m_playbackMode == PlaybackMode::Not) {
-            m_node->clear();
-            m_node->setVisible(false);
-            m_calculated = false;
-            return;
-        }
-
-        if (!settings::showTrajectory()) {
-            m_node->clear();
-            m_node->setVisible(false);
-            m_calculated = false;
+            m_holdBranch.node->clear();
+            m_releaseBranch.node->clear();
+            m_holdBranch.node->setVisible(false);
+            m_releaseBranch.node->setVisible(false);
+            m_holdBranch.calculated = false;
+            m_releaseBranch.calculated = false;
             m_forceRefresh = true;
             return;
         }
 
-        m_node->setVisible(true);
+        if (!settings::showTrajectory()) {
+            m_holdBranch.node->clear();
+            m_releaseBranch.node->clear();
+            m_holdBranch.node->setVisible(false);
+            m_releaseBranch.node->setVisible(false);
+            m_holdBranch.calculated = false;
+            m_releaseBranch.calculated = false;
+            m_forceRefresh = true;
+            return;
+        }
+
+        m_holdBranch.node->setVisible(true);
+        m_releaseBranch.node->setVisible(true);
         auto const signature = computeSignature(layer);
-        if (m_calculated && signature == m_lastSignature) return;
+        auto const anchor = currentAnchor(layer);
+        positionBranch(m_holdBranch, anchor);
+        positionBranch(m_releaseBranch, anchor);
 
-        // A full prediction performs hundreds of collision steps. Keep the
-        // configured physics TPS, but do not repeat that work every render
-        // frame. Slow calculations automatically receive a longer interval.
-        auto const started = std::chrono::steady_clock::now();
-        if (m_calculated && !m_forceRefresh && started < m_nextRefresh) return;
+        auto& inputBranch = m_p1Holding ? m_holdBranch : m_releaseBranch;
+        auto& alternateBranch = m_p1Holding ? m_releaseBranch : m_holdBranch;
+        auto const inputMode = m_p1Holding ? Hold : Release;
+        auto const alternateMode = m_p1Holding ? Release : Hold;
+        auto const now = std::chrono::steady_clock::now();
 
-        m_drawing = true;
-        m_node->clear();
-        m_physicsDt = 1.f / static_cast<float>(settings::trajectoryTps());
-        m_playerDelta = m_physicsDt * 60.f;
+        BranchState* selected = nullptr;
+        int selectedMode = 0;
+        bool selectedIsActive = false;
 
-        auto const bothPlayers = !layer->m_levelSettings->m_twoPlayerMode;
-        if (layer->m_player1) {
-            // Draw the wider release branch first and the narrower hold branch
-            // on top. Their shared prefix now shows both colors instead of one
-            // path hiding the other.
-            simulate(layer, true, Release, bothPlayers);
-            simulate(layer, true, Hold, bothPlayers);
+        if (m_forceRefresh) {
+            selectedMode = m_forcedMode;
+            selected = selectedMode == Hold ? &m_holdBranch : &m_releaseBranch;
+            selectedIsActive = selectedMode == inputMode;
+        } else if (!inputBranch.calculated) {
+            selected = &inputBranch;
+            selectedMode = inputMode;
+            selectedIsActive = true;
+        } else if (!alternateBranch.calculated) {
+            selected = &alternateBranch;
+            selectedMode = alternateMode;
+        } else {
+            auto const inputChanged = !(signature == inputBranch.signature);
+            auto const alternateChanged = !(signature == alternateBranch.signature);
+            auto const inputUrgent = inputChanged &&
+                needsImmediateRefresh(signature, inputBranch.signature);
+            auto const alternateUrgent = alternateChanged &&
+                needsImmediateRefresh(signature, alternateBranch.signature);
+            auto const inputDue = inputChanged && now >= inputBranch.nextRefresh;
+            auto const alternateDue = alternateChanged && now >= alternateBranch.nextRefresh;
+
+            if (inputUrgent) {
+                selected = &inputBranch;
+                selectedMode = inputMode;
+                selectedIsActive = true;
+            } else if (alternateUrgent && !inputDue) {
+                selected = &alternateBranch;
+                selectedMode = alternateMode;
+            } else if (inputDue && alternateDue) {
+                if (inputBranch.nextRefresh <= alternateBranch.nextRefresh) {
+                    selected = &inputBranch;
+                    selectedMode = inputMode;
+                    selectedIsActive = true;
+                } else {
+                    selected = &alternateBranch;
+                    selectedMode = alternateMode;
+                }
+            } else if (inputDue) {
+                selected = &inputBranch;
+                selectedMode = inputMode;
+                selectedIsActive = true;
+            } else if (alternateDue) {
+                selected = &alternateBranch;
+                selectedMode = alternateMode;
+            }
         }
-        if (layer->m_player2 && layer->m_gameState.m_isDualMode &&
-            layer->m_levelSettings->m_twoPlayerMode) {
-            simulate(layer, false, Release, false);
-            simulate(layer, false, Hold, false);
-        }
 
-        m_fakePlayer1->setVisible(false);
-        m_fakePlayer2->setVisible(false);
-        m_lastSignature = signature;
-        m_calculated = true;
-        m_drawing = false;
+        if (!selected) return;
+        calculateBranch(layer, *selected, signature, selectedMode, selectedIsActive);
         m_forceRefresh = false;
-
-        auto const finished = std::chrono::steady_clock::now();
-        auto const cost = finished - started;
-        auto const minimumPeriod = std::chrono::duration_cast<
-            std::chrono::steady_clock::duration
-        >(std::chrono::duration<double>(1.0 / 30.0));
-        m_nextRefresh = started + std::max(minimumPeriod, cost * 3);
     }
 }
