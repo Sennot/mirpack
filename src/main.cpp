@@ -171,26 +171,6 @@ namespace cleanfeed {
     };
 
     class $modify(CleanFeedPlayerObject, PlayerObject) {
-        void pushButton(PlayerButton button) {
-            if (!Trajectory::get().isFakePlayer(this) && button == PlayerButton::Jump) {
-                if (auto* layer = overlay::layer()) {
-                    if (this == layer->m_player1) Trajectory::get().handleButton(true, true);
-                    else if (this == layer->m_player2) Trajectory::get().handleButton(false, true);
-                }
-            }
-            PlayerObject::pushButton(button);
-        }
-
-        void releaseButton(PlayerButton button) {
-            if (!Trajectory::get().isFakePlayer(this) && button == PlayerButton::Jump) {
-                if (auto* layer = overlay::layer()) {
-                    if (this == layer->m_player1) Trajectory::get().handleButton(true, false);
-                    else if (this == layer->m_player2) Trajectory::get().handleButton(false, false);
-                }
-            }
-            PlayerObject::releaseButton(button);
-        }
-
         void playSpiderDashEffect(cocos2d::CCPoint from, cocos2d::CCPoint to) {
             if (!Trajectory::get().drawing()) PlayerObject::playSpiderDashEffect(from, to);
         }
