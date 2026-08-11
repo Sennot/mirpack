@@ -4,6 +4,7 @@
 
 #include <Geode/Geode.hpp>
 
+#include <chrono>
 #include <functional>
 #include <unordered_set>
 
@@ -98,7 +99,9 @@ namespace cleanfeed {
         bool m_deadP2 = false;
         bool m_p1Holding = false;
         bool m_p2Holding = false;
+        bool m_forceRefresh = true;
         float m_physicsDt = 1.f / 240.f;
         float m_playerDelta = 0.25f;
+        std::chrono::steady_clock::time_point m_nextRefresh{};
     };
 }

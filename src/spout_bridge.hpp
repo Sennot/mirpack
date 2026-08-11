@@ -12,6 +12,5 @@ namespace cleanfeed::bridge {
         unsigned int height,
         bool invert
     );
-    long senderFrame(void* handle);
     int shareMode(void* handle);
 }

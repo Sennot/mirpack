@@ -29,10 +29,6 @@ namespace cleanfeed::bridge {
         return handle && static_cast<Spout*>(handle)->SendFbo(fbo, width, height, invert);
     }
 
-    long senderFrame(void* handle) {
-        return handle ? static_cast<Spout*>(handle)->GetSenderFrame() : 0;
-    }
-
     int shareMode(void* handle) {
         return handle ? static_cast<Spout*>(handle)->GetShareMode() : -1;
     }

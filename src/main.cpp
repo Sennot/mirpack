@@ -62,6 +62,25 @@ namespace cleanfeed {
     };
 
     class $modify(CleanFeedPlayLayer, PlayLayer) {
+        static void onModify(auto& self) {
+            constexpr auto hook = "PlayLayer::destroyPlayer";
+            (void)self.setHookPriority(hook, geode::Priority::FirstPre);
+
+            // Fake prediction deaths must be consumed before noclip, death
+            // counters and replay mods can mistake them for the real player.
+            for (auto const id : {
+                "absolllute.hackmega",
+                "absolllute.megahack",
+                "eclipse.eclipse-menu",
+                "elohmrow.death_tracker",
+                "zilko.xdbot"
+            }) {
+                if (auto* mod = Loader::get()->getInstalledMod(id)) {
+                    (void)self.setHookPriorityBeforePre(hook, mod);
+                }
+            }
+        }
+
         bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
             if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
             setupForLayer(this);
@@ -153,6 +172,26 @@ namespace cleanfeed {
     };
 
     class $modify(CleanFeedPlayerObject, PlayerObject) {
+        void pushButton(PlayerButton button) {
+            if (!Trajectory::get().isFakePlayer(this) && button == PlayerButton::Jump) {
+                if (auto* layer = overlay::layer()) {
+                    if (this == layer->m_player1) Trajectory::get().handleButton(true, true);
+                    else if (this == layer->m_player2) Trajectory::get().handleButton(false, true);
+                }
+            }
+            PlayerObject::pushButton(button);
+        }
+
+        void releaseButton(PlayerButton button) {
+            if (!Trajectory::get().isFakePlayer(this) && button == PlayerButton::Jump) {
+                if (auto* layer = overlay::layer()) {
+                    if (this == layer->m_player1) Trajectory::get().handleButton(true, false);
+                    else if (this == layer->m_player2) Trajectory::get().handleButton(false, false);
+                }
+            }
+            PlayerObject::releaseButton(button);
+        }
+
         void playSpiderDashEffect(cocos2d::CCPoint from, cocos2d::CCPoint to) {
             if (!Trajectory::get().drawing()) PlayerObject::playSpiderDashEffect(from, to);
         }

@@ -5,7 +5,7 @@
   },
   "id": "halil.spout2-clean-feed",
   "name": "Spout2 Clean Feed",
-  "version": "v1.1.1",
+  "version": "v1.2.0",
   "developer": "halil",
   "description": "Sends a clean Geometry Dash level feed to OBS through Spout2 while hitboxes and trajectories remain visible only in-game.",
   "tags": ["gameplay", "utility"],

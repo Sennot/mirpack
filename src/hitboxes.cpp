@@ -7,13 +7,20 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 
 using namespace geode::prelude;
 
 namespace cleanfeed::hitboxes {
     namespace {
-        cocos2d::CCDrawNode* s_drawNode = nullptr;
+        using Clock = std::chrono::steady_clock;
+
+        cocos2d::CCDrawNode* s_objectNode = nullptr;
+        cocos2d::CCDrawNode* s_playerNode = nullptr;
         GJBaseGameLayer* s_layer = nullptr;
+        Clock::time_point s_nextObjectRefresh{};
+        bool s_objectsDirty = true;
+        bool s_wasEnabled = false;
 
         struct Palette {
             cocos2d::ccColor4F solid;
@@ -54,7 +61,7 @@ namespace cleanfeed::hitboxes {
                     return;
 
                 case GameObjectType::Solid: {
-                    drawRect(s_drawNode, object->getObjectRect(), palette.solidFill, width, palette.solid);
+                    drawRect(s_objectNode, object->getObjectRect(), palette.solidFill, width, palette.solid);
                     return;
                 }
 
@@ -75,7 +82,7 @@ namespace cleanfeed::hitboxes {
                         case 6: vertices[2] = topRight; break;
                         default: break;
                     }
-                    s_drawNode->drawPolygon(
+                    s_objectNode->drawPolygon(
                         vertices.data(), static_cast<unsigned int>(vertices.size()),
                         palette.solidFill, width, palette.solid
                     );
@@ -87,13 +94,22 @@ namespace cleanfeed::hitboxes {
                     if (object == layer->m_anticheatSpike) return;
                     auto const radius = std::max(object->m_scaleX, object->m_scaleY) * object->m_objectRadius;
                     if (radius > 0.f) {
-                        s_drawNode->drawCircle(object->getPosition(), radius, palette.hazardFill, width, palette.hazard, 20);
+                        s_objectNode->drawCircle(
+                            object->getPosition(), radius, palette.hazardFill,
+                            width, palette.hazard, 12
+                        );
                     } else if (auto* oriented = layer->m_isEditor ? object->getOrientedBox() : object->m_orientedBox) {
-                        s_drawNode->drawPolygon(oriented->m_corners.data(), 4, palette.hazardFill, width, palette.hazard);
+                        s_objectNode->drawPolygon(
+                            oriented->m_corners.data(), 4,
+                            palette.hazardFill, width, palette.hazard
+                        );
                     } else {
                         auto const rectDirty = object->m_isObjectRectDirty;
                         auto const offsetCalculated = object->m_boxOffsetCalculated;
-                        drawRect(s_drawNode, object->getObjectRect(), palette.hazardFill, width, palette.hazard);
+                        drawRect(
+                            s_objectNode, object->getObjectRect(),
+                            palette.hazardFill, width, palette.hazard
+                        );
                         object->m_isObjectRectDirty = rectDirty;
                         object->m_boxOffsetCalculated = offsetCalculated;
                     }
@@ -107,7 +123,7 @@ namespace cleanfeed::hitboxes {
                         return;
                     }
                     if (auto* oriented = layer->m_isEditor ? object->getOrientedBox() : object->m_orientedBox) {
-                        s_drawNode->drawPolygon(
+                        s_objectNode->drawPolygon(
                             oriented->m_corners.data(), 4,
                             palette.interactableFill, width, palette.interactable
                         );
@@ -115,7 +131,7 @@ namespace cleanfeed::hitboxes {
                         auto const rectDirty = object->m_isObjectRectDirty;
                         auto const offsetCalculated = object->m_boxOffsetCalculated;
                         drawRect(
-                            s_drawNode, object->getObjectRect(),
+                            s_objectNode, object->getObjectRect(),
                             palette.interactableFill, width, palette.interactable
                         );
                         object->m_isObjectRectDirty = rectDirty;
@@ -164,10 +180,15 @@ namespace cleanfeed::hitboxes {
             auto const rotatedFill = settings::colorWithAlpha("player-rotated-color", fillAlpha);
 
             if (auto* oriented = player->m_orientedBox) {
-                s_drawNode->drawPolygon(oriented->m_corners.data(), 4, rotatedFill, width, rotatedColor);
+                s_playerNode->drawPolygon(
+                    oriented->m_corners.data(), 4, rotatedFill, width, rotatedColor
+                );
             }
-            drawRect(s_drawNode, player->getObjectRect(), playerFill, width, playerColor);
-            drawRect(s_drawNode, player->getObjectRect(0.3f, 0.3f), innerFill, width, innerColor);
+            drawRect(s_playerNode, player->getObjectRect(), playerFill, width, playerColor);
+            drawRect(
+                s_playerNode, player->getObjectRect(0.3f, 0.3f),
+                innerFill, width, innerColor
+            );
         }
     }
 
@@ -176,23 +197,49 @@ namespace cleanfeed::hitboxes {
         if (!layer || !root) return;
 
         s_layer = layer;
-        s_drawNode = cocos2d::CCDrawNode::create();
-        s_drawNode->m_bUseArea = false;
-        s_drawNode->setBlendFunc({GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA});
-        s_drawNode->setID("hitboxes"_spr);
-        root->addChild(s_drawNode, 10);
+        s_objectNode = cocos2d::CCDrawNode::create();
+        s_objectNode->m_bUseArea = false;
+        s_objectNode->setBlendFunc({GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA});
+        s_objectNode->setID("object-hitboxes"_spr);
+        root->addChild(s_objectNode, 10);
+
+        s_playerNode = cocos2d::CCDrawNode::create();
+        s_playerNode->m_bUseArea = false;
+        s_playerNode->setBlendFunc({GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA});
+        s_playerNode->setID("player-hitboxes"_spr);
+        root->addChild(s_playerNode, 11);
+
+        s_nextObjectRefresh = {};
+        s_objectsDirty = true;
+        s_wasEnabled = false;
     }
 
     void detach(GJBaseGameLayer* layer) {
         if (layer != s_layer) return;
-        s_drawNode = nullptr;
+        s_objectNode = nullptr;
+        s_playerNode = nullptr;
         s_layer = nullptr;
+        s_nextObjectRefresh = {};
+        s_objectsDirty = true;
+        s_wasEnabled = false;
     }
 
     void update(GJBaseGameLayer* layer) {
-        if (!s_drawNode || layer != s_layer) return;
-        s_drawNode->clear();
-        if (!settings::showHitboxes()) return;
+        if (!s_objectNode || !s_playerNode || layer != s_layer) return;
+
+        auto const enabled = settings::showHitboxes();
+        if (!enabled) {
+            if (s_wasEnabled) {
+                s_objectNode->clear();
+                s_playerNode->clear();
+            }
+            s_wasEnabled = false;
+            s_objectsDirty = true;
+            return;
+        }
+
+        if (!s_wasEnabled) s_objectsDirty = true;
+        s_wasEnabled = true;
 
         auto const zoom = std::max(0.01f, layer->m_gameState.m_cameraZoom);
         auto const width = settings::hitboxWidth() / zoom;
@@ -206,10 +253,26 @@ namespace cleanfeed::hitboxes {
             .interactableFill = settings::colorWithAlpha("interactable-color", fillAlpha),
         };
 
-        forEachVisibleObject(layer, [&](GameObject* object) {
-            drawObject(layer, object, width, palette);
-        });
+        // Environment geometry is the expensive part on object-heavy levels.
+        // Refresh it at 30 Hz while keeping player hitboxes at the render rate.
+        auto const now = Clock::now();
+        if (s_objectsDirty || now >= s_nextObjectRefresh) {
+            auto const started = now;
+            s_objectNode->clear();
+            forEachVisibleObject(layer, [&](GameObject* object) {
+                drawObject(layer, object, width, palette);
+            });
 
+            auto const cost = Clock::now() - started;
+            auto const basePeriod = std::chrono::duration_cast<Clock::duration>(
+                std::chrono::duration<double>(1.0 / 30.0)
+            );
+            auto const adaptivePeriod = std::max(basePeriod, cost * 3);
+            s_nextObjectRefresh = started + adaptivePeriod;
+            s_objectsDirty = false;
+        }
+
+        s_playerNode->clear();
         drawPlayer(layer->m_player1, width, fillAlpha);
         if (layer->m_gameState.m_isDualMode) drawPlayer(layer->m_player2, width, fillAlpha);
     }

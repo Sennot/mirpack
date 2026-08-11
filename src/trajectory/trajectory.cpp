@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 
 using namespace geode::prelude;
@@ -135,6 +136,8 @@ namespace cleanfeed {
         m_calculated = false;
         m_p1Holding = false;
         m_p2Holding = false;
+        m_forceRefresh = true;
+        m_nextRefresh = {};
     }
 
     void Trajectory::shutdown(GJBaseGameLayer* layer) {
@@ -152,6 +155,8 @@ namespace cleanfeed {
         clearActivatedObjects();
         m_calculated = false;
         m_drawing = false;
+        m_forceRefresh = true;
+        m_nextRefresh = {};
     }
 
     bool Trajectory::drawing() const {
@@ -179,9 +184,10 @@ namespace cleanfeed {
     }
 
     void Trajectory::handleButton(bool player1, bool holding) {
-        if (player1) m_p1Holding = holding;
-        else m_p2Holding = holding;
-        m_calculated = false;
+        auto& previous = player1 ? m_p1Holding : m_p2Holding;
+        if (previous == holding) return;
+        previous = holding;
+        m_forceRefresh = true;
     }
 
     void Trajectory::rememberActivatedObject(EnhancedGameObject* object, PlayerObject* player) {
@@ -301,7 +307,11 @@ namespace cleanfeed {
         layer->m_effectManager->postCollisionCheck();
 
         auto const zoom = std::max(0.01f, layer->m_gameState.m_cameraZoom);
-        m_node->drawSegment(previousPosition, player->getPosition(), settings::trajectoryWidth() / zoom, color);
+        auto const branchScale = (mode & Release) ? 1.4f : 0.72f;
+        m_node->drawSegment(
+            previousPosition, player->getPosition(),
+            settings::trajectoryWidth() * branchScale / zoom, color
+        );
         ++stepCount;
         return false;
     }
@@ -438,12 +448,19 @@ namespace cleanfeed {
             m_node->clear();
             m_node->setVisible(false);
             m_calculated = false;
+            m_forceRefresh = true;
             return;
         }
 
         m_node->setVisible(true);
         auto const signature = computeSignature(layer);
         if (m_calculated && signature == m_lastSignature) return;
+
+        // A full prediction performs hundreds of collision steps. Keep the
+        // configured physics TPS, but do not repeat that work every render
+        // frame. Slow calculations automatically receive a longer interval.
+        auto const started = std::chrono::steady_clock::now();
+        if (m_calculated && !m_forceRefresh && started < m_nextRefresh) return;
 
         m_drawing = true;
         m_node->clear();
@@ -452,13 +469,16 @@ namespace cleanfeed {
 
         auto const bothPlayers = !layer->m_levelSettings->m_twoPlayerMode;
         if (layer->m_player1) {
-            simulate(layer, true, Hold, bothPlayers);
+            // Draw the wider release branch first and the narrower hold branch
+            // on top. Their shared prefix now shows both colors instead of one
+            // path hiding the other.
             simulate(layer, true, Release, bothPlayers);
+            simulate(layer, true, Hold, bothPlayers);
         }
         if (layer->m_player2 && layer->m_gameState.m_isDualMode &&
             layer->m_levelSettings->m_twoPlayerMode) {
-            simulate(layer, false, Hold, false);
             simulate(layer, false, Release, false);
+            simulate(layer, false, Hold, false);
         }
 
         m_fakePlayer1->setVisible(false);
@@ -466,5 +486,13 @@ namespace cleanfeed {
         m_lastSignature = signature;
         m_calculated = true;
         m_drawing = false;
+        m_forceRefresh = false;
+
+        auto const finished = std::chrono::steady_clock::now();
+        auto const cost = finished - started;
+        auto const minimumPeriod = std::chrono::duration_cast<
+            std::chrono::steady_clock::duration
+        >(std::chrono::duration<double>(1.0 / 30.0));
+        m_nextRefresh = started + std::max(minimumPeriod, cost * 3);
     }
 }

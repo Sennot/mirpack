@@ -19,6 +19,5 @@ namespace cleanfeed {
         std::string m_senderName;
         bool m_warnedSendFailure = false;
         bool m_loggedPublishing = false;
-        unsigned int m_stalledFrames = 0;
     };
 }

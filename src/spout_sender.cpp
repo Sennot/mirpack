@@ -70,9 +70,7 @@ namespace cleanfeed {
         glBindFramebuffer(GL_FRAMEBUFFER, captureFbo);
         glReadBuffer(captureFbo == 0 ? GL_BACK : static_cast<GLenum>(state.drawBuffer));
 
-        auto const frameBefore = bridge::senderFrame(m_spout);
         auto const sent = bridge::sendFbo(m_spout, captureFbo, width, height, true);
-        auto const frameAfter = bridge::senderFrame(m_spout);
 
         if (!sent) {
             if (!m_warnedSendFailure) {
@@ -83,20 +81,12 @@ namespace cleanfeed {
         }
 
         m_warnedSendFailure = false;
-        if (frameAfter != frameBefore) {
-            m_stalledFrames = 0;
-            if (!m_loggedPublishing) {
-                log::info(
-                    "Spout2 sender '{}' is publishing {}x{} frames (share mode {})",
-                    m_senderName, width, height, bridge::shareMode(m_spout)
-                );
-                m_loggedPublishing = true;
-            }
-        } else if (++m_stalledFrames == 120) {
-            log::error(
-                "Spout2 sender '{}' exists but its frame counter is not advancing",
-                m_senderName
+        if (!m_loggedPublishing) {
+            log::info(
+                "Spout2 sender '{}' accepted {}x{} frames (share mode {})",
+                m_senderName, width, height, bridge::shareMode(m_spout)
             );
+            m_loggedPublishing = true;
         }
     }
 
@@ -105,7 +95,6 @@ namespace cleanfeed {
         m_senderName.clear();
         m_warnedSendFailure = false;
         m_loggedPublishing = false;
-        m_stalledFrames = 0;
     }
 
     void SpoutSender::shutdown() {
