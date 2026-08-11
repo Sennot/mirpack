@@ -27,3 +27,10 @@ target_link_libraries(Spout2Static PUBLIC
 if(MSVC)
     target_compile_options(Spout2Static PRIVATE /W0 /utf-8)
 endif()
+
+# SpoutCopy uses _mm_shuffle_epi8 for its RGB conversion fast path. MSVC
+# accepts that intrinsic on x64, while Clang requires the SSSE3 feature to be
+# enabled explicitly.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(Spout2Static PRIVATE -mssse3)
+endif()
