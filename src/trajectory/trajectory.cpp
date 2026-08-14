@@ -121,15 +121,19 @@ namespace cleanfeed {
     }
 
     void Trajectory::init(GJBaseGameLayer* layer) {
-        shutdown(m_layer);
+        auto previousLayer = m_layerLifetime.lock();
+        shutdown(previousLayer.data());
         if (!layer || !overlay::root()) return;
 
         m_layer = layer;
+        m_layerLifetime = layer;
         m_node = TrajectoryDrawNode::create();
         if (!m_node) {
             m_layer = nullptr;
+            m_layerLifetime = nullptr;
             return;
         }
+        m_nodeLifetime = m_node;
         m_node->setID("trajectory"_spr);
         m_node->setBlendFunc({GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA});
         overlay::root()->addChild(m_node, 20);
@@ -142,14 +146,24 @@ namespace cleanfeed {
     }
 
     void Trajectory::shutdown(GJBaseGameLayer* layer) {
-        if (m_layer && layer && layer != m_layer) return;
+        auto liveLayer = m_layerLifetime.lock();
+        if (liveLayer && layer && layer != liveLayer.data()) return;
 
-        if (m_fakePlayer1 && m_fakePlayer1->getParent()) m_fakePlayer1->removeFromParent();
-        if (m_fakePlayer2 && m_fakePlayer2->getParent()) m_fakePlayer2->removeFromParent();
-        if (m_node && m_node->getParent()) m_node->removeFromParent();
+        // The editor can disappear without our LevelEditorLayer::onExit hook
+        // being the final hook in a heavily modded chain. Only touch scene
+        // children while their owning layer is still alive.
+        if (liveLayer) {
+            if (m_fakePlayer1 && m_fakePlayer1->getParent()) m_fakePlayer1->removeFromParent();
+            if (m_fakePlayer2 && m_fakePlayer2->getParent()) m_fakePlayer2->removeFromParent();
+            if (auto liveNode = m_nodeLifetime.lock(); liveNode && liveNode->getParent()) {
+                liveNode->removeFromParent();
+            }
+        }
 
         m_layer = nullptr;
+        m_layerLifetime = nullptr;
         m_node = nullptr;
+        m_nodeLifetime = nullptr;
         m_fakePlayer1 = nullptr;
         m_fakePlayer2 = nullptr;
         m_actions.clear();

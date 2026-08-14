@@ -85,7 +85,9 @@ namespace cleanfeed {
         void clearActivatedObjects();
 
         GJBaseGameLayer* m_layer = nullptr;
+        geode::WeakRef<GJBaseGameLayer> m_layerLifetime;
         TrajectoryDrawNode* m_node = nullptr;
+        geode::WeakRef<TrajectoryDrawNode> m_nodeLifetime;
         PlayerObject* m_fakePlayer1 = nullptr;
         PlayerObject* m_fakePlayer2 = nullptr;
         std::unordered_set<uintptr_t> m_activatedObjectsP1;
