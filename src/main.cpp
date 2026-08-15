@@ -44,11 +44,12 @@ namespace cleanfeed {
             constexpr auto hook = "cocos2d::CCEGLView::swapBuffers";
             (void)self.setHookPriority(hook, geode::Priority::NormalPre);
 
-            // Capture the completed GD framebuffer immediately before Mega Hack
-            // adds its own overlay. Both IDs exist in current Windows distributions.
+            // Capture after Mega Hack has drawn its overlay so the complete
+            // Mega Hack UI is present in the Spout sender in every scene.
+            // Both IDs exist in current Windows distributions.
             for (auto const id : {"absolllute.hackmega", "absolllute.megahack"}) {
                 if (auto* mod = Loader::get()->getInstalledMod(id)) {
-                    (void)self.setHookPriorityBeforePre(hook, mod);
+                    (void)self.setHookPriorityAfterPre(hook, mod);
                 }
             }
         }
