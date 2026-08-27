@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(Spout2CleanFeed VERSION 1.3.3 LANGUAGES CXX)
+project(Spout2CleanFeed VERSION 1.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,7 +28,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 add_subdirectory(third_party/spout)
 add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 
-target_link_libraries(${PROJECT_NAME} Spout2Static)
+target_link_libraries(${PROJECT_NAME} Spout2Static user32 gdi32)
 
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W4 /permissive- /utf-8)

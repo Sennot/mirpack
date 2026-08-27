@@ -9,6 +9,10 @@ namespace cleanfeed::settings {
         return Mod::get()->getSettingValue<bool>("enabled");
     }
 
+    bool captureCursor() {
+        return Mod::get()->getSettingValue<bool>("capture-cursor");
+    }
+
     std::string senderName() {
         auto value = Mod::get()->getSettingValue<std::string>("sender-name");
         return value.empty() ? "Geometry Dash Clean Feed" : value;

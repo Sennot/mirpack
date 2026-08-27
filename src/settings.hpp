@@ -4,6 +4,7 @@
 
 namespace cleanfeed::settings {
     bool enabled();
+    bool captureCursor();
     std::string senderName();
     bool showHitboxes();
     bool showTrajectory();
