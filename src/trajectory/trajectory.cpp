@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <optional>
 
 using namespace geode::prelude;
 
@@ -378,29 +379,32 @@ namespace cleanfeed {
         }
     }
 
-    void Trajectory::simulate(GJBaseGameLayer* layer, bool player1, int mode, bool clickBothPlayers) {
+    void Trajectory::simulate(
+        GJBaseGameLayer* layer,
+        bool player1,
+        int mode,
+        bool clickBothPlayers,
+        GJGameState const& frameGameState,
+        EffectManagerState& frameEffectState,
+        SavedPlayerCheckpoint const& playerCheckpoint,
+        SavedPlayerCheckpoint const* otherCheckpoint
+    ) {
         auto* player = player1 ? m_fakePlayer1 : m_fakePlayer2;
         auto* realPlayer = player1 ? layer->m_player1 : layer->m_player2;
         auto* other = player1 ? m_fakePlayer2 : m_fakePlayer1;
         auto* otherReal = player1 ? layer->m_player2 : layer->m_player1;
         if (!player || !realPlayer || !other) return;
 
-        GJGameState gameState = layer->m_gameState;
-        EffectManagerState effectState;
-        layer->m_effectManager->saveToState(effectState);
-
         player->copyAttributes(realPlayer);
         player->m_maybeReducedEffects = true;
-        auto checkpoint = SavedPlayerCheckpoint::create(realPlayer);
-        checkpoint.apply(player);
+        playerCheckpoint.apply(player);
         player->setPosition(realPlayer->m_position);
         player->setRotation(realPlayer->getRotation());
 
-        if (clickBothPlayers && otherReal) {
+        if (clickBothPlayers && otherReal && otherCheckpoint) {
             other->copyAttributes(otherReal);
             other->m_maybeReducedEffects = true;
-            auto otherCheckpoint = SavedPlayerCheckpoint::create(otherReal);
-            otherCheckpoint.apply(other);
+            otherCheckpoint->apply(other);
             other->setPosition(otherReal->m_position);
             other->setRotation(otherReal->getRotation());
         }
@@ -412,8 +416,8 @@ namespace cleanfeed {
         other->setVisible(false);
 
         clearActivatedObjects();
-        layer->m_gameState = gameState;
-        layer->m_effectManager->loadFromState(effectState);
+        layer->m_gameState = frameGameState;
+        layer->m_effectManager->loadFromState(frameEffectState);
     }
 
     void Trajectory::drawHitbox(PlayerObject* player) {
@@ -472,15 +476,43 @@ namespace cleanfeed {
         m_playerDelta = m_physicsDt * 60.f;
         m_trajectoryWidth = m_predictionSettings.lineWidth;
 
-        auto const bothPlayers = !layer->m_levelSettings->m_twoPlayerMode;
+        // Every hold/release branch starts from the same real frame. Capturing
+        // these large states once avoids repeating container allocations and
+        // hundreds of player-field copies without changing any simulated step.
+        GJGameState const frameGameState = layer->m_gameState;
+        EffectManagerState frameEffectState;
+        layer->m_effectManager->saveToState(frameEffectState);
+
+        std::optional<SavedPlayerCheckpoint> player1Checkpoint;
+        std::optional<SavedPlayerCheckpoint> player2Checkpoint;
         if (layer->m_player1) {
-            simulate(layer, true, Hold, bothPlayers);
-            simulate(layer, true, Release, bothPlayers);
+            player1Checkpoint.emplace(SavedPlayerCheckpoint::create(layer->m_player1));
         }
-        if (layer->m_player2 && layer->m_gameState.m_isDualMode &&
-            layer->m_levelSettings->m_twoPlayerMode) {
-            simulate(layer, false, Hold, false);
-            simulate(layer, false, Release, false);
+        if (layer->m_player2 && layer->m_gameState.m_isDualMode) {
+            player2Checkpoint.emplace(SavedPlayerCheckpoint::create(layer->m_player2));
+        }
+
+        auto const bothPlayers = !layer->m_levelSettings->m_twoPlayerMode;
+        if (player1Checkpoint) {
+            auto* otherCheckpoint = player2Checkpoint ? &*player2Checkpoint : nullptr;
+            simulate(
+                layer, true, Hold, bothPlayers,
+                frameGameState, frameEffectState, *player1Checkpoint, otherCheckpoint
+            );
+            simulate(
+                layer, true, Release, bothPlayers,
+                frameGameState, frameEffectState, *player1Checkpoint, otherCheckpoint
+            );
+        }
+        if (player2Checkpoint && layer->m_levelSettings->m_twoPlayerMode) {
+            simulate(
+                layer, false, Hold, false,
+                frameGameState, frameEffectState, *player2Checkpoint, nullptr
+            );
+            simulate(
+                layer, false, Release, false,
+                frameGameState, frameEffectState, *player2Checkpoint, nullptr
+            );
         }
 
         m_fakePlayer1->setVisible(false);

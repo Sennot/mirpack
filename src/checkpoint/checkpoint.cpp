@@ -8,7 +8,7 @@
 #include "VMProtect/VMProtectSDK.h"
 #endif
 
-void SavedPlayerCheckpoint::apply(PlayerObject* p) {
+void SavedPlayerCheckpoint::apply(PlayerObject* p) const {
 #ifdef SILICATE_PROTECT
     VMProtectBegin("CheckpointLoading");
 #endif

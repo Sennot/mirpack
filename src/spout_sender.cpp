@@ -16,8 +16,18 @@ using namespace geode::prelude;
 
 namespace cleanfeed {
     namespace {
-        struct CursorFrame final {
+        struct CursorBitmap final {
+            HCURSOR handle = nullptr;
             std::vector<std::uint8_t> pixels;
+            unsigned int width = 0;
+            unsigned int height = 0;
+            DWORD hotspotX = 0;
+            DWORD hotspotY = 0;
+        };
+
+        struct CursorFrame final {
+            CursorBitmap const* bitmap = nullptr;
+            bool bitmapChanged = false;
             unsigned int pixelWidth = 0;
             unsigned int pixelHeight = 0;
             float left = 0.f;
@@ -34,6 +44,8 @@ namespace cleanfeed {
                 if (value.hbmMask) DeleteObject(value.hbmMask);
             }
         };
+
+        CursorBitmap s_cursorBitmap;
 
         struct OpenGLState final {
             GLint readFbo = 0;
@@ -92,6 +104,87 @@ namespace cleanfeed {
             ) == height;
         }
 
+        bool loadCursorBitmap(HCURSOR handle, CursorBitmap& bitmap) {
+            IconInfo icon;
+            if (!handle || !GetIconInfo(handle, &icon.value)) return false;
+
+            BITMAP colorBitmap{};
+            BITMAP maskBitmap{};
+            if (icon.value.hbmColor) GetObject(icon.value.hbmColor, sizeof(colorBitmap), &colorBitmap);
+            if (icon.value.hbmMask) GetObject(icon.value.hbmMask, sizeof(maskBitmap), &maskBitmap);
+
+            auto const bitmapWidth = icon.value.hbmColor ? colorBitmap.bmWidth : maskBitmap.bmWidth;
+            auto const bitmapHeight = icon.value.hbmColor
+                ? std::abs(colorBitmap.bmHeight)
+                : std::abs(maskBitmap.bmHeight) / 2;
+            if (bitmapWidth <= 0 || bitmapHeight <= 0) return false;
+
+            auto* device = GetDC(nullptr);
+            if (!device) return false;
+
+            std::vector<std::uint8_t> pixels;
+            auto success = false;
+            if (icon.value.hbmColor) {
+                success = readBitmap(
+                    device, icon.value.hbmColor, bitmapWidth, bitmapHeight, pixels
+                );
+                if (success) {
+                    auto hasAlpha = false;
+                    for (std::size_t i = 3; i < pixels.size(); i += 4) {
+                        if (pixels[i] != 0) {
+                            hasAlpha = true;
+                            break;
+                        }
+                    }
+
+                    // Legacy color cursors store transparency only in the AND mask.
+                    if (!hasAlpha && icon.value.hbmMask) {
+                        std::vector<std::uint8_t> mask;
+                        if (readBitmap(device, icon.value.hbmMask, bitmapWidth, bitmapHeight, mask)) {
+                            for (std::size_t i = 0; i < pixels.size(); i += 4) {
+                                pixels[i + 3] = mask[i] > 127 ? 0 : 255;
+                            }
+                        }
+                    }
+                }
+            } else if (icon.value.hbmMask) {
+                std::vector<std::uint8_t> mask;
+                success = readBitmap(
+                    device, icon.value.hbmMask, bitmapWidth, bitmapHeight * 2, mask
+                );
+                if (success) {
+                    pixels.assign(
+                        static_cast<std::size_t>(bitmapWidth) *
+                            static_cast<std::size_t>(bitmapHeight) * 4,
+                        0
+                    );
+                    auto const halfBytes = static_cast<std::size_t>(bitmapWidth) *
+                        static_cast<std::size_t>(bitmapHeight) * 4;
+                    for (std::size_t i = 0; i < halfBytes; i += 4) {
+                        auto const andBit = mask[i] > 127;
+                        auto const xorBit = mask[halfBytes + i] > 127;
+                        if (andBit && !xorBit) continue;
+
+                        auto const color = static_cast<std::uint8_t>(xorBit ? 255 : 0);
+                        pixels[i] = color;
+                        pixels[i + 1] = color;
+                        pixels[i + 2] = color;
+                        pixels[i + 3] = 255;
+                    }
+                }
+            }
+            ReleaseDC(nullptr, device);
+            if (!success) return false;
+
+            bitmap.handle = handle;
+            bitmap.pixels = std::move(pixels);
+            bitmap.width = static_cast<unsigned int>(bitmapWidth);
+            bitmap.height = static_cast<unsigned int>(bitmapHeight);
+            bitmap.hotspotX = icon.value.xHotspot;
+            bitmap.hotspotY = icon.value.yHotspot;
+            return true;
+        }
+
         bool cursorFrame(
             unsigned int framebufferWidth,
             unsigned int framebufferHeight,
@@ -120,86 +213,21 @@ namespace cleanfeed {
                 return false;
             }
 
-            IconInfo icon;
-            if (!GetIconInfo(cursor.hCursor, &icon.value)) return false;
-
-            BITMAP colorBitmap{};
-            BITMAP maskBitmap{};
-            if (icon.value.hbmColor) GetObject(icon.value.hbmColor, sizeof(colorBitmap), &colorBitmap);
-            if (icon.value.hbmMask) GetObject(icon.value.hbmMask, sizeof(maskBitmap), &maskBitmap);
-
-            auto const bitmapWidth = icon.value.hbmColor ? colorBitmap.bmWidth : maskBitmap.bmWidth;
-            auto const bitmapHeight = icon.value.hbmColor
-                ? std::abs(colorBitmap.bmHeight)
-                : std::abs(maskBitmap.bmHeight) / 2;
-            if (bitmapWidth <= 0 || bitmapHeight <= 0) return false;
-
-            auto* device = GetDC(nullptr);
-            if (!device) return false;
-
-            auto success = false;
-            if (icon.value.hbmColor) {
-                success = readBitmap(
-                    device, icon.value.hbmColor, bitmapWidth, bitmapHeight, frame.pixels
-                );
-                if (success) {
-                    auto hasAlpha = false;
-                    for (std::size_t i = 3; i < frame.pixels.size(); i += 4) {
-                        if (frame.pixels[i] != 0) {
-                            hasAlpha = true;
-                            break;
-                        }
-                    }
-
-                    // Legacy color cursors store transparency only in the AND mask.
-                    if (!hasAlpha && icon.value.hbmMask) {
-                        std::vector<std::uint8_t> mask;
-                        if (readBitmap(device, icon.value.hbmMask, bitmapWidth, bitmapHeight, mask)) {
-                            for (std::size_t i = 0; i < frame.pixels.size(); i += 4) {
-                                frame.pixels[i + 3] = mask[i] > 127 ? 0 : 255;
-                            }
-                        }
-                    }
-                }
-            } else if (icon.value.hbmMask) {
-                std::vector<std::uint8_t> mask;
-                success = readBitmap(
-                    device, icon.value.hbmMask, bitmapWidth, bitmapHeight * 2, mask
-                );
-                if (success) {
-                    frame.pixels.assign(
-                        static_cast<std::size_t>(bitmapWidth) *
-                            static_cast<std::size_t>(bitmapHeight) * 4,
-                        0
-                    );
-                    auto const halfBytes = static_cast<std::size_t>(bitmapWidth) *
-                        static_cast<std::size_t>(bitmapHeight) * 4;
-                    for (std::size_t i = 0; i < halfBytes; i += 4) {
-                        auto const andBit = mask[i] > 127;
-                        auto const xorBit = mask[halfBytes + i] > 127;
-                        if (andBit && !xorBit) continue;
-
-                        auto const color = static_cast<std::uint8_t>(xorBit ? 255 : 0);
-                        frame.pixels[i] = color;
-                        frame.pixels[i + 1] = color;
-                        frame.pixels[i + 2] = color;
-                        frame.pixels[i + 3] = 255;
-                    }
-                }
-            }
-            ReleaseDC(nullptr, device);
-            if (!success) return false;
+            auto const bitmapChanged = s_cursorBitmap.handle != cursor.hCursor;
+            if (bitmapChanged && !loadCursorBitmap(cursor.hCursor, s_cursorBitmap)) return false;
 
             auto const scaleX = static_cast<float>(framebufferWidth) /
                 static_cast<float>(clientWidth);
             auto const scaleY = static_cast<float>(framebufferHeight) /
                 static_cast<float>(clientHeight);
-            frame.pixelWidth = static_cast<unsigned int>(bitmapWidth);
-            frame.pixelHeight = static_cast<unsigned int>(bitmapHeight);
-            frame.left = (static_cast<float>(position.x) - icon.value.xHotspot) * scaleX;
-            frame.top = (static_cast<float>(position.y) - icon.value.yHotspot) * scaleY;
-            frame.width = static_cast<float>(bitmapWidth) * scaleX;
-            frame.height = static_cast<float>(bitmapHeight) * scaleY;
+            frame.bitmap = &s_cursorBitmap;
+            frame.bitmapChanged = bitmapChanged;
+            frame.pixelWidth = s_cursorBitmap.width;
+            frame.pixelHeight = s_cursorBitmap.height;
+            frame.left = (static_cast<float>(position.x) - s_cursorBitmap.hotspotX) * scaleX;
+            frame.top = (static_cast<float>(position.y) - s_cursorBitmap.hotspotY) * scaleY;
+            frame.width = static_cast<float>(s_cursorBitmap.width) * scaleX;
+            frame.height = static_cast<float>(s_cursorBitmap.height) * scaleY;
             return true;
         }
 
@@ -328,6 +356,7 @@ namespace cleanfeed {
         );
         m_cursorWidth = width;
         m_cursorHeight = height;
+        m_cursorTextureNeedsUpload = true;
         return true;
     }
 
@@ -342,6 +371,7 @@ namespace cleanfeed {
         m_cursorTexture = 0;
         m_cursorWidth = 0;
         m_cursorHeight = 0;
+        m_cursorTextureNeedsUpload = true;
     }
 
     void SpoutSender::captureBackBuffer() {
@@ -391,12 +421,16 @@ namespace cleanfeed {
             glBindFramebuffer(GL_FRAMEBUFFER, m_compositionFbo);
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
             glBindTexture(GL_TEXTURE_2D, m_cursorTexture);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-            glTexSubImage2D(
-                GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(cursor.pixelWidth),
-                static_cast<GLsizei>(cursor.pixelHeight), GL_BGRA, GL_UNSIGNED_BYTE,
-                cursor.pixels.data()
-            );
+            if (cursor.bitmapChanged) m_cursorTextureNeedsUpload = true;
+            if (m_cursorTextureNeedsUpload && cursor.bitmap) {
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+                glTexSubImage2D(
+                    GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(cursor.pixelWidth),
+                    static_cast<GLsizei>(cursor.pixelHeight), GL_BGRA, GL_UNSIGNED_BYTE,
+                    cursor.bitmap->pixels.data()
+                );
+                m_cursorTextureNeedsUpload = false;
+            }
             drawCursorTexture(m_cursorTexture, cursor, width, height);
 
             sendFbo = m_compositionFbo;

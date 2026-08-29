@@ -27,6 +27,7 @@ namespace cleanfeed {
         unsigned int m_cursorTexture = 0;
         unsigned int m_cursorWidth = 0;
         unsigned int m_cursorHeight = 0;
+        bool m_cursorTextureNeedsUpload = true;
         bool m_warnedCursorFailure = false;
         bool m_warnedSendFailure = false;
         bool m_loggedPublishing = false;

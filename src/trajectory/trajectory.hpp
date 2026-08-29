@@ -6,6 +6,8 @@
 
 #include <unordered_set>
 
+struct SavedPlayerCheckpoint;
+
 namespace cleanfeed {
     class TrajectoryDrawNode final : public cocos2d::CCDrawNode {
     public:
@@ -70,7 +72,16 @@ namespace cleanfeed {
             GJBaseGameLayer* layer,
             PredictionSettings const& predictionSettings
         ) const;
-        void simulate(GJBaseGameLayer* layer, bool player1, int mode, bool clickBothPlayers);
+        void simulate(
+            GJBaseGameLayer* layer,
+            bool player1,
+            int mode,
+            bool clickBothPlayers,
+            GJGameState const& frameGameState,
+            EffectManagerState& frameEffectState,
+            SavedPlayerCheckpoint const& playerCheckpoint,
+            SavedPlayerCheckpoint const* otherCheckpoint
+        );
         void runPrediction(
             GJBaseGameLayer* layer,
             PlayerObject* player,
