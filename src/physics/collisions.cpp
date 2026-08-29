@@ -391,14 +391,17 @@ void collisionCheckObjects(GJBaseGameLayer* pl, PlayerObject* player,
             continue;
         }
 
-        EffectGameObject* obj = (EffectGameObject*)object;
-        if (!obj) continue;
-
         auto& trajectory = cleanfeed::Trajectory::get();
-        if ((trajectory.playerHasActivated(player, obj) ||
-             trajectory.realPlayerHasActivated(player, obj)) &&
-            (object->m_objectType != GameObjectType::Slope))
+        auto* obj = static_cast<EffectGameObject*>(object);
+        // Slopes are plain GameObjects. Checking activation first used to read
+        // EnhancedGameObject fields past the end of a slope allocation, which
+        // made the next level after an editor session crash depending on the
+        // allocator layout.
+        if (object->m_objectType != GameObjectType::Slope &&
+            (trajectory.playerHasActivated(player, obj) ||
+             trajectory.realPlayerHasActivated(player, obj))) {
             continue;
+        }
 
         cocos2d::CCRect rect;
         if (object->m_objectType == GameObjectType::Slope) {

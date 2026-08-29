@@ -4,7 +4,6 @@
 
 #include <Geode/Geode.hpp>
 
-#include <functional>
 #include <unordered_set>
 
 namespace cleanfeed {
@@ -58,14 +57,19 @@ namespace cleanfeed {
             bool operator==(Signature const&) const = default;
         };
 
-        struct Action {
-            int delay = 0;
-            std::function<void()> function;
-            bool executed = false;
+        struct PredictionSettings {
+            int tps = 240;
+            float length = 1.f;
+            float lineWidth = 0.65f;
+            cocos2d::ccColor4F holdColor{0.f, 1.f, 0.1f, 1.f};
+            cocos2d::ccColor4F releaseColor{1.f, 0.f, 0.1f, 1.f};
         };
 
         PlayerObject* createFakePlayer(GJBaseGameLayer* layer, std::string const& id);
-        Signature computeSignature(GJBaseGameLayer* layer) const;
+        Signature computeSignature(
+            GJBaseGameLayer* layer,
+            PredictionSettings const& predictionSettings
+        ) const;
         void simulate(GJBaseGameLayer* layer, bool player1, int mode, bool clickBothPlayers);
         void runPrediction(
             GJBaseGameLayer* layer,
@@ -92,7 +96,7 @@ namespace cleanfeed {
         PlayerObject* m_fakePlayer2 = nullptr;
         std::unordered_set<uintptr_t> m_activatedObjectsP1;
         std::unordered_set<uintptr_t> m_activatedObjectsP2;
-        std::vector<Action> m_actions;
+        PredictionSettings m_predictionSettings;
         Signature m_lastSignature;
         bool m_calculated = false;
         bool m_drawing = false;

@@ -32,6 +32,20 @@ namespace cleanfeed::hitboxes {
             cocos2d::ccColor4F interactableFill;
         };
 
+        struct PlayerPalette {
+            cocos2d::ccColor4F outer;
+            cocos2d::ccColor4F inner;
+            cocos2d::ccColor4F rotated;
+            cocos2d::ccColor4F outerFill;
+            cocos2d::ccColor4F innerFill;
+            cocos2d::ccColor4F rotatedFill;
+        };
+
+        cocos2d::ccColor4F withFillAlpha(cocos2d::ccColor4F color, float fillAlpha) {
+            color.a *= fillAlpha;
+            return color;
+        }
+
         void drawRect(
             cocos2d::CCDrawNode* node,
             cocos2d::CCRect const& rect,
@@ -170,25 +184,22 @@ namespace cleanfeed::hitboxes {
             }
         }
 
-        void drawPlayer(PlayerObject* player, float width, float fillAlpha) {
+        void drawPlayer(PlayerObject* player, float width, PlayerPalette const& palette) {
             if (!player) return;
-
-            auto const playerColor = settings::color("player-color");
-            auto const innerColor = settings::color("player-inner-color");
-            auto const rotatedColor = settings::color("player-rotated-color");
-            auto const playerFill = settings::colorWithAlpha("player-color", fillAlpha);
-            auto const innerFill = settings::colorWithAlpha("player-inner-color", fillAlpha);
-            auto const rotatedFill = settings::colorWithAlpha("player-rotated-color", fillAlpha);
 
             if (auto* oriented = player->m_orientedBox) {
                 s_playerNode->drawPolygon(
-                    oriented->m_corners.data(), 4, rotatedFill, width, rotatedColor
+                    oriented->m_corners.data(), 4,
+                    palette.rotatedFill, width, palette.rotated
                 );
             }
-            drawRect(s_playerNode, player->getObjectRect(), playerFill, width, playerColor);
+            drawRect(
+                s_playerNode, player->getObjectRect(),
+                palette.outerFill, width, palette.outer
+            );
             drawRect(
                 s_playerNode, player->getObjectRect(0.3f, 0.3f),
-                innerFill, width, innerColor
+                palette.innerFill, width, palette.inner
             );
         }
     }
@@ -265,13 +276,16 @@ namespace cleanfeed::hitboxes {
         auto const now = Clock::now();
         if (s_objectsDirty || now >= s_nextObjectRefresh) {
             auto const started = now;
+            auto const solid = settings::color("solid-color");
+            auto const hazard = settings::color("hazard-color");
+            auto const interactable = settings::color("interactable-color");
             Palette const palette = {
-                .solid = settings::color("solid-color"),
-                .hazard = settings::color("hazard-color"),
-                .interactable = settings::color("interactable-color"),
-                .solidFill = settings::colorWithAlpha("solid-color", fillAlpha),
-                .hazardFill = settings::colorWithAlpha("hazard-color", fillAlpha),
-                .interactableFill = settings::colorWithAlpha("interactable-color", fillAlpha),
+                .solid = solid,
+                .hazard = hazard,
+                .interactable = interactable,
+                .solidFill = withFillAlpha(solid, fillAlpha),
+                .hazardFill = withFillAlpha(hazard, fillAlpha),
+                .interactableFill = withFillAlpha(interactable, fillAlpha),
             };
             s_objectNode->clear();
             forEachVisibleObject(layer, [&](GameObject* object) {
@@ -288,7 +302,20 @@ namespace cleanfeed::hitboxes {
         }
 
         s_playerNode->clear();
-        drawPlayer(layer->m_player1, width, fillAlpha);
-        if (layer->m_gameState.m_isDualMode) drawPlayer(layer->m_player2, width, fillAlpha);
+        auto const outer = settings::color("player-color");
+        auto const inner = settings::color("player-inner-color");
+        auto const rotated = settings::color("player-rotated-color");
+        PlayerPalette const playerPalette{
+            .outer = outer,
+            .inner = inner,
+            .rotated = rotated,
+            .outerFill = withFillAlpha(outer, fillAlpha),
+            .innerFill = withFillAlpha(inner, fillAlpha),
+            .rotatedFill = withFillAlpha(rotated, fillAlpha),
+        };
+        drawPlayer(layer->m_player1, width, playerPalette);
+        if (layer->m_gameState.m_isDualMode) {
+            drawPlayer(layer->m_player2, width, playerPalette);
+        }
     }
 }

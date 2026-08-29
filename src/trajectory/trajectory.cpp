@@ -140,6 +140,8 @@ namespace cleanfeed {
 
         m_fakePlayer1 = createFakePlayer(layer, "trajectory-fake-player-1"_spr);
         m_fakePlayer2 = createFakePlayer(layer, "trajectory-fake-player-2"_spr);
+        m_activatedObjectsP1.reserve(64);
+        m_activatedObjectsP2.reserve(64);
         m_calculated = false;
         m_p1Holding = false;
         m_p2Holding = false;
@@ -166,7 +168,6 @@ namespace cleanfeed {
         m_nodeLifetime = nullptr;
         m_fakePlayer1 = nullptr;
         m_fakePlayer2 = nullptr;
-        m_actions.clear();
         clearActivatedObjects();
         m_calculated = false;
         m_drawing = false;
@@ -228,7 +229,10 @@ namespace cleanfeed {
         m_activatedObjectsP2.clear();
     }
 
-    Trajectory::Signature Trajectory::computeSignature(GJBaseGameLayer* layer) const {
+    Trajectory::Signature Trajectory::computeSignature(
+        GJBaseGameLayer* layer,
+        PredictionSettings const& predictionSettings
+    ) const {
         Signature signature;
         auto const storePlayer = [](PlayerObject* player, float (&values)[7], uint64_t& flags) {
             if (!player) return;
@@ -247,14 +251,13 @@ namespace cleanfeed {
 
         signature.timeWarp = layer->m_gameState.m_timeWarp;
         signature.cameraZoom = layer->m_gameState.m_cameraZoom;
-        signature.lineWidth = settings::trajectoryWidth();
-        signature.length = settings::trajectoryLength();
-        signature.tps = settings::trajectoryTps();
-        signature.colors[0] = packColor(settings::color("trajectory-hold-color"));
-        signature.colors[1] = packColor(settings::color("trajectory-release-color"));
+        signature.lineWidth = predictionSettings.lineWidth;
+        signature.length = predictionSettings.length;
+        signature.tps = predictionSettings.tps;
+        signature.colors[0] = packColor(predictionSettings.holdColor);
+        signature.colors[1] = packColor(predictionSettings.releaseColor);
 
-        uint32_t flags = 0;
-        flags |= settings::showTrajectory() ? 1u : 0u;
+        uint32_t flags = 1u;
         flags |= layer->m_gameState.m_isDualMode ? 2u : 0u;
         flags |= layer->m_isPlatformer ? 4u : 0u;
         flags |= layer->m_levelSettings->m_twoPlayerMode ? 8u : 0u;
@@ -296,18 +299,6 @@ namespace cleanfeed {
         if (dead) {
             if (stepCount > 1) drawHitbox(player);
             return true;
-        }
-
-        if (!m_actions.empty()) {
-            for (auto& action : m_actions) {
-                if (action.delay == 0) {
-                    action.function();
-                    action.executed = true;
-                } else {
-                    --action.delay;
-                }
-            }
-            std::erase_if(m_actions, [](Action const& action) { return action.executed; });
         }
 
         player->m_playEffects = false;
@@ -363,12 +354,16 @@ namespace cleanfeed {
         }
 
         auto const iterations = static_cast<int>(
-            settings::trajectoryLength() * static_cast<float>(settings::trajectoryTps()) /
+            m_predictionSettings.length * static_cast<float>(m_predictionSettings.tps) /
             std::max(0.001f, layer->m_gameState.m_timeWarp)
         );
         auto const color = (mode & Hold)
-            ? settings::color("trajectory-hold-color")
-            : settings::color("trajectory-release-color");
+            ? m_predictionSettings.holdColor
+            : m_predictionSettings.releaseColor;
+        auto inverse = color;
+        inverse.r = 1.f - inverse.r;
+        inverse.g = 1.f - inverse.g;
+        inverse.b = 1.f - inverse.b;
         auto const playerMask = player == m_fakePlayer1 ? Player1 : Player2;
         int playerSteps = 0;
         int otherSteps = 0;
@@ -378,10 +373,6 @@ namespace cleanfeed {
         for (int index = 0; index < iterations && (!playerDone || (both && !otherDone)); ++index) {
             if (!playerDone) playerDone = iterate(layer, player, mode | playerMask, color, playerSteps);
             if (both && layer->m_gameState.m_isDualMode && !otherDone) {
-                auto inverse = color;
-                inverse.r = 1.f - inverse.r;
-                inverse.g = 1.f - inverse.g;
-                inverse.b = 1.f - inverse.b;
                 otherDone = iterate(layer, other, mode | Player2, inverse, otherSteps);
             }
         }
@@ -421,7 +412,6 @@ namespace cleanfeed {
         other->setVisible(false);
 
         clearActivatedObjects();
-        m_actions.clear();
         layer->m_gameState = gameState;
         layer->m_effectManager->loadFromState(effectState);
     }
@@ -465,14 +455,22 @@ namespace cleanfeed {
         }
 
         m_node->setVisible(true);
-        auto const signature = computeSignature(layer);
+        PredictionSettings const predictionSettings{
+            .tps = settings::trajectoryTps(),
+            .length = settings::trajectoryLength(),
+            .lineWidth = settings::trajectoryWidth(),
+            .holdColor = settings::color("trajectory-hold-color"),
+            .releaseColor = settings::color("trajectory-release-color"),
+        };
+        auto const signature = computeSignature(layer, predictionSettings);
         if (m_calculated && signature == m_lastSignature) return;
 
         m_drawing = true;
         m_node->clear();
-        m_physicsDt = 1.f / static_cast<float>(settings::trajectoryTps());
+        m_predictionSettings = predictionSettings;
+        m_physicsDt = 1.f / static_cast<float>(m_predictionSettings.tps);
         m_playerDelta = m_physicsDt * 60.f;
-        m_trajectoryWidth = settings::trajectoryWidth();
+        m_trajectoryWidth = m_predictionSettings.lineWidth;
 
         auto const bothPlayers = !layer->m_levelSettings->m_twoPlayerMode;
         if (layer->m_player1) {
