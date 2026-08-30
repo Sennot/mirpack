@@ -275,12 +275,12 @@ void SavedPlayerCheckpoint::apply(PlayerObject* p) const {
 #endif
 }
 
-SavedPlayerCheckpoint SavedPlayerCheckpoint::create(PlayerObject* p) {
+void SavedPlayerCheckpoint::capture(PlayerObject* p) {
 #ifdef SILICATE_PROTECT
     VMProtectBegin("CheckpointSaving");
 #endif
 
-    SavedPlayerCheckpoint c;
+    auto& c = *this;
     // m_ccPosition = p->getPosition();
     c.m_ccRotation = p->getRotation();
     c.m_mainLayer = p->m_mainLayer;
@@ -448,6 +448,7 @@ SavedPlayerCheckpoint SavedPlayerCheckpoint::create(PlayerObject* p) {
     c.m_controlsDisabled = p->m_controlsDisabled;
     c.m_lastGroundedPos = p->m_lastGroundedPos;
 
+    c.m_touchingRings.clear();
     for (unsigned int i = 0; i < p->m_touchingRings->count(); i++) {
         c.m_touchingRings.push_back(p->m_touchingRings->objectAtIndex(i));
     }
@@ -537,5 +538,10 @@ SavedPlayerCheckpoint SavedPlayerCheckpoint::create(PlayerObject* p) {
     VMProtectEnd();
 #endif
 
-    return c;
+}
+
+SavedPlayerCheckpoint SavedPlayerCheckpoint::create(PlayerObject* p) {
+    SavedPlayerCheckpoint checkpoint;
+    checkpoint.capture(p);
+    return checkpoint;
 }

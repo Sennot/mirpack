@@ -336,11 +336,7 @@ void collisionCheckObjects(GJBaseGameLayer* pl, PlayerObject* player,
     if (objectCount <= 0) return;
 
     CCRect playerRect = player->getObjectRect();
-
-    [[maybe_unused]] float playerMinX = playerRect.getMinX();
-    [[maybe_unused]] float playerMaxX = playerRect.getMaxX();
-    [[maybe_unused]] float playerMinY = playerRect.getMinY();
-    [[maybe_unused]] float playerMaxY = playerRect.getMaxY();
+    auto& trajectory = cleanfeed::Trajectory::get();
 
     for (int i = 0; i < objectCount; i++) {
         GameObject* object = objects->at(i);
@@ -391,7 +387,6 @@ void collisionCheckObjects(GJBaseGameLayer* pl, PlayerObject* player,
             continue;
         }
 
-        auto& trajectory = cleanfeed::Trajectory::get();
         auto* obj = static_cast<EffectGameObject*>(object);
         // Slopes are plain GameObjects. Checking activation first used to read
         // EnhancedGameObject fields past the end of a slope allocation, which
@@ -439,20 +434,12 @@ void collisionCheckObjects(GJBaseGameLayer* pl, PlayerObject* player,
                 player->m_lastActivatedPortal = object;
                 activateForTrajectory(obj, player);
                 phys::flipGravity(player, true);
-                playerMinX = player->getObjectRect().getMinX();
-                playerMaxX = player->getObjectRect().getMaxX();
-                playerMinY = player->getObjectRect().getMinY();
-                playerMaxY = player->getObjectRect().getMaxY();
                 break;
             case GameObjectType::NormalGravityPortal:
                 player->m_lastPortalPos = object->getPosition();
                 player->m_lastActivatedPortal = object;
                 activateForTrajectory(obj, player);
                 phys::flipGravity(player, false);
-                playerMinX = player->getObjectRect().getMinX();
-                playerMaxX = player->getObjectRect().getMaxX();
-                playerMinY = player->getObjectRect().getMinY();
-                playerMaxY = player->getObjectRect().getMaxY();
                 break;
             case GameObjectType::GravityTogglePortal:
                 player->m_lastPortalPos = object->getPosition();
@@ -478,11 +465,6 @@ void collisionCheckObjects(GJBaseGameLayer* pl, PlayerObject* player,
                     player->handleRotatedCollisionInternal(
                         dt, object, emptyRect, false, false, true);
                 }
-
-                playerMinX = player->getObjectRect().getMinX();
-                playerMaxX = player->getObjectRect().getMaxX();
-                playerMinY = player->getObjectRect().getMinY();
-                playerMaxY = player->getObjectRect().getMaxY();
 
                 break;
             case GameObjectType::CustomRing:

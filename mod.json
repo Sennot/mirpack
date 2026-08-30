@@ -5,7 +5,7 @@
   },
   "id": "halil.spout2-clean-feed",
   "name": "Spout2 Clean Feed",
-  "version": "v1.4.2",
+  "version": "v1.5.0",
   "developer": "halil",
   "description": "Sends a clean Geometry Dash level feed to OBS through Spout2 while hitboxes and trajectories remain visible only in-game.",
   "tags": ["gameplay", "utility"],
@@ -68,7 +68,7 @@
     "trajectory-length": {
       "type": "float",
       "name": "Trajectory length (seconds)",
-      "default": 1.0,
+      "default": 2.0,
       "min": 0.1,
       "max": 5.0,
       "control": {
@@ -76,6 +76,13 @@
         "slider-step": 0.1,
         "input": true
       },
+      "enable-if": "show-trajectory"
+    },
+    "high-performance-trajectory": {
+      "type": "bool",
+      "name": "High-performance trajectory",
+      "description": "Reuses prediction snapshots and their container memory between frames. Disable this to use the v1.4.2 allocation path for troubleshooting.",
+      "default": true,
       "enable-if": "show-trajectory"
     },
     "trajectory-tps": {

@@ -4,9 +4,9 @@
 
 #include <Geode/Geode.hpp>
 
-#include <unordered_set>
+#include "checkpoint/checkpoint.hpp"
 
-struct SavedPlayerCheckpoint;
+#include <unordered_set>
 
 namespace cleanfeed {
     class TrajectoryDrawNode final : public cocos2d::CCDrawNode {
@@ -63,6 +63,7 @@ namespace cleanfeed {
             int tps = 240;
             float length = 1.f;
             float lineWidth = 0.65f;
+            bool highPerformance = true;
             cocos2d::ccColor4F holdColor{0.f, 1.f, 0.1f, 1.f};
             cocos2d::ccColor4F releaseColor{1.f, 0.f, 0.1f, 1.f};
         };
@@ -107,6 +108,9 @@ namespace cleanfeed {
         PlayerObject* m_fakePlayer2 = nullptr;
         std::unordered_set<uintptr_t> m_activatedObjectsP1;
         std::unordered_set<uintptr_t> m_activatedObjectsP2;
+        EffectManagerState m_reusableEffectState;
+        SavedPlayerCheckpoint m_reusablePlayer1Checkpoint;
+        SavedPlayerCheckpoint m_reusablePlayer2Checkpoint;
         PredictionSettings m_predictionSettings;
         Signature m_lastSignature;
         bool m_calculated = false;
@@ -118,5 +122,9 @@ namespace cleanfeed {
         float m_physicsDt = 1.f / 240.f;
         float m_playerDelta = 0.25f;
         float m_trajectoryWidth = 0.65f;
+        float m_cachedTimeWarp = -1.f;
+        int m_cachedProgressIncrement = 0;
+        float m_cachedCameraZoom = -1.f;
+        float m_cachedLineRadius = 0.65f;
     };
 }

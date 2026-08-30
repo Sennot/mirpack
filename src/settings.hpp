@@ -8,6 +8,7 @@ namespace cleanfeed::settings {
     std::string senderName();
     bool showHitboxes();
     bool showTrajectory();
+    bool highPerformanceTrajectory();
     int trajectoryTps();
     float trajectoryLength();
     float trajectoryWidth();

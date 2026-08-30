@@ -10,6 +10,7 @@
 
 struct SavedPlayerCheckpoint {
     void apply(PlayerObject* p) const;
+    void capture(PlayerObject* p);
     static SavedPlayerCheckpoint create(PlayerObject* p);
 
     cocos2d::CCPoint m_ccPosition;

@@ -26,6 +26,10 @@ namespace cleanfeed::settings {
         return Mod::get()->getSettingValue<bool>("show-trajectory");
     }
 
+    bool highPerformanceTrajectory() {
+        return Mod::get()->getSettingValue<bool>("high-performance-trajectory");
+    }
+
     int trajectoryTps() {
         return std::clamp(static_cast<int>(Mod::get()->getSettingValue<int64_t>("trajectory-tps")), 60, 1000);
     }

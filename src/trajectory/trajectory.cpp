@@ -2,7 +2,6 @@
 // (GPL-3.0). Bot, replay, renderer and UI coupling were removed.
 #include "trajectory.hpp"
 
-#include "checkpoint/checkpoint.hpp"
 #include "overlay.hpp"
 #include "physics/collisions.hpp"
 #include "physics/object.hpp"
@@ -23,6 +22,27 @@ namespace cleanfeed {
             };
             return channel(color.r) | (channel(color.g) << 8u) |
                    (channel(color.b) << 16u) | (channel(color.a) << 24u);
+        }
+
+        void clearEffectState(EffectManagerState& state) {
+            state.m_unkVecCAState.clear();
+            state.m_unkVecPulseEffectAction.clear();
+            state.m_unorderedMapInt_vectorPulseEffectAction.clear();
+            state.m_unorderedMapInt_vectorCountTriggerAction.clear();
+            state.m_unorderedSet_int1.clear();
+            state.m_mapInt_Int.clear();
+            state.m_unorderedMapInt_OpacityEffectAction.clear();
+            state.m_vectorTouchToggleAction.clear();
+            state.m_vectorCollisionTriggerAction.clear();
+            state.m_vectorToggleTriggerAction.clear();
+            state.m_vectorSpawnTriggerAction.clear();
+            state.m_itemCountMap.clear();
+            state.m_unorderedMapInt_bool.clear();
+            state.m_vectorGroupCommandObject2.clear();
+            state.m_unorderedMapInt_pair_double_double.clear();
+            state.m_unorderedSet_int2.clear();
+            state.m_timerItemMap.clear();
+            state.m_unorderedMapInt_vectorTimerTriggerAction.clear();
         }
 
         uint64_t packPlayerFlags(PlayerObject* player) {
@@ -264,6 +284,7 @@ namespace cleanfeed {
         flags |= layer->m_levelSettings->m_twoPlayerMode ? 8u : 0u;
         flags |= m_p1Holding ? 16u : 0u;
         flags |= m_p2Holding ? 32u : 0u;
+        flags |= predictionSettings.highPerformance ? 64u : 0u;
         signature.boolPack = flags;
         return signature;
     }
@@ -279,9 +300,13 @@ namespace cleanfeed {
 
         layer->m_gameState.m_totalTime += m_physicsDt;
         auto const timeWarp = std::max(0.001f, layer->m_gameState.m_timeWarp);
+        if (timeWarp != m_cachedTimeWarp) {
+            m_cachedTimeWarp = timeWarp;
+            m_cachedProgressIncrement = static_cast<int>(std::round(timeWarp * 1000.f));
+        }
         layer->m_gameState.m_unkDouble3 += m_physicsDt / timeWarp;
         ++layer->m_gameState.m_currentProgress;
-        layer->m_gameState.m_unkUint5 += static_cast<int>(std::round(timeWarp * 1000.f));
+        layer->m_gameState.m_unkUint5 += m_cachedProgressIncrement;
         player->m_totalTime += m_physicsDt;
 
         auto const playerSpeed = *reinterpret_cast<float*>(&layer->m_gameState.m_timeModRelated);
@@ -313,9 +338,13 @@ namespace cleanfeed {
         layer->m_effectManager->postCollisionCheck();
 
         auto const zoom = std::max(0.01f, layer->m_gameState.m_cameraZoom);
+        if (zoom != m_cachedCameraZoom) {
+            m_cachedCameraZoom = zoom;
+            m_cachedLineRadius = m_trajectoryWidth / zoom;
+        }
         m_node->drawSegment(
             previousPosition, player->getPosition(),
-            m_trajectoryWidth / zoom, color
+            m_cachedLineRadius, color
         );
         ++stepCount;
         return false;
@@ -463,6 +492,7 @@ namespace cleanfeed {
             .tps = settings::trajectoryTps(),
             .length = settings::trajectoryLength(),
             .lineWidth = settings::trajectoryWidth(),
+            .highPerformance = settings::highPerformanceTrajectory(),
             .holdColor = settings::color("trajectory-hold-color"),
             .releaseColor = settings::color("trajectory-release-color"),
         };
@@ -475,33 +505,52 @@ namespace cleanfeed {
         m_physicsDt = 1.f / static_cast<float>(m_predictionSettings.tps);
         m_playerDelta = m_physicsDt * 60.f;
         m_trajectoryWidth = m_predictionSettings.lineWidth;
+        m_cachedTimeWarp = -1.f;
+        m_cachedCameraZoom = -1.f;
 
         // Every hold/release branch starts from the same real frame. Capturing
         // these large states once avoids repeating container allocations and
         // hundreds of player-field copies without changing any simulated step.
         GJGameState const frameGameState = layer->m_gameState;
-        EffectManagerState frameEffectState;
+        EffectManagerState localEffectState;
+        auto& frameEffectState = m_predictionSettings.highPerformance
+            ? m_reusableEffectState
+            : localEffectState;
+        if (m_predictionSettings.highPerformance) clearEffectState(frameEffectState);
         layer->m_effectManager->saveToState(frameEffectState);
 
-        std::optional<SavedPlayerCheckpoint> player1Checkpoint;
-        std::optional<SavedPlayerCheckpoint> player2Checkpoint;
+        std::optional<SavedPlayerCheckpoint> localPlayer1Checkpoint;
+        std::optional<SavedPlayerCheckpoint> localPlayer2Checkpoint;
+        SavedPlayerCheckpoint* player1Checkpoint = nullptr;
+        SavedPlayerCheckpoint* player2Checkpoint = nullptr;
         if (layer->m_player1) {
-            player1Checkpoint.emplace(SavedPlayerCheckpoint::create(layer->m_player1));
+            if (m_predictionSettings.highPerformance) {
+                m_reusablePlayer1Checkpoint.capture(layer->m_player1);
+                player1Checkpoint = &m_reusablePlayer1Checkpoint;
+            } else {
+                localPlayer1Checkpoint.emplace(SavedPlayerCheckpoint::create(layer->m_player1));
+                player1Checkpoint = &*localPlayer1Checkpoint;
+            }
         }
         if (layer->m_player2 && layer->m_gameState.m_isDualMode) {
-            player2Checkpoint.emplace(SavedPlayerCheckpoint::create(layer->m_player2));
+            if (m_predictionSettings.highPerformance) {
+                m_reusablePlayer2Checkpoint.capture(layer->m_player2);
+                player2Checkpoint = &m_reusablePlayer2Checkpoint;
+            } else {
+                localPlayer2Checkpoint.emplace(SavedPlayerCheckpoint::create(layer->m_player2));
+                player2Checkpoint = &*localPlayer2Checkpoint;
+            }
         }
 
         auto const bothPlayers = !layer->m_levelSettings->m_twoPlayerMode;
         if (player1Checkpoint) {
-            auto* otherCheckpoint = player2Checkpoint ? &*player2Checkpoint : nullptr;
             simulate(
                 layer, true, Hold, bothPlayers,
-                frameGameState, frameEffectState, *player1Checkpoint, otherCheckpoint
+                frameGameState, frameEffectState, *player1Checkpoint, player2Checkpoint
             );
             simulate(
                 layer, true, Release, bothPlayers,
-                frameGameState, frameEffectState, *player1Checkpoint, otherCheckpoint
+                frameGameState, frameEffectState, *player1Checkpoint, player2Checkpoint
             );
         }
         if (player2Checkpoint && layer->m_levelSettings->m_twoPlayerMode) {
