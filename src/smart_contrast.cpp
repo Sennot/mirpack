@@ -9,6 +9,8 @@
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/ScrollLayer.hpp>
 #include <Geode/ui/TextInput.hpp>
+#include <Geode/utils/base64.hpp>
+#include <Geode/cocos/support/zip_support/ZipUtils.h>
 
 #include <algorithm>
 #include <array>
@@ -17,6 +19,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -62,6 +65,7 @@ namespace cleanfeed::smart_contrast {
             std::array<Palette, 3> palettes;
             size_t objectCount = 0;
             size_t sampledColors = 0;
+            std::string error;
         };
 
         struct LevelEntry {
@@ -323,28 +327,94 @@ namespace cleanfeed::smart_contrast {
             return channels;
         }
 
+        bool looksLikePlainLevel(std::string_view data) {
+            auto const headerEnd = data.find(';');
+            if (headerEnd == std::string_view::npos) return false;
+            auto const header = data.substr(0, headerEnd);
+            return header.find("kS") != std::string_view::npos && header.find(',') != std::string_view::npos;
+        }
+
+        std::optional<std::string> decompressLevel(
+            std::string_view compressed,
+            std::shared_ptr<AnalysisJob> const& job
+        ) {
+            if (compressed.empty() || compressed.size() > std::numeric_limits<unsigned int>::max()) {
+                return std::nullopt;
+            }
+
+            job->progress.store(0.025f, std::memory_order_relaxed);
+            auto decodedResult = geode::utils::base64::decode(
+                compressed,
+                geode::utils::base64::Base64Variant::Url
+            );
+            if (decodedResult.isErr() || job->cancelled.load(std::memory_order_relaxed)) {
+                return std::nullopt;
+            }
+
+            auto decoded = std::move(decodedResult).unwrap();
+            if (decoded.empty() || decoded.size() > std::numeric_limits<unsigned int>::max()) {
+                return std::nullopt;
+            }
+
+            job->progress.store(0.055f, std::memory_order_relaxed);
+            unsigned char* inflated = nullptr;
+            auto const inflatedSize = cocos2d::ZipUtils::ccInflateMemory(
+                decoded.data(),
+                static_cast<unsigned int>(decoded.size()),
+                &inflated
+            );
+            if (inflatedSize <= 0 || !inflated) {
+                delete[] inflated;
+                return std::nullopt;
+            }
+
+            std::string output(reinterpret_cast<char const*>(inflated), static_cast<size_t>(inflatedSize));
+            delete[] inflated;
+            if (!looksLikePlainLevel(output)) return std::nullopt;
+
+            job->progress.store(0.1f, std::memory_order_relaxed);
+            return output;
+        }
+
         AnalysisResult analyzeLevel(std::string const& data, std::shared_ptr<AnalysisJob> const& job) {
+            AnalysisResult result;
             Histogram histogram;
             std::unordered_map<int, double> channelUse;
 
             job->stage.store(0, std::memory_order_relaxed);
-            job->progress.store(0.02f, std::memory_order_relaxed);
+            job->progress.store(0.01f, std::memory_order_relaxed);
 
-            auto const headerEnd = data.find(';');
-            auto const header = std::string_view(data).substr(0, headerEnd);
+            std::string unpacked;
+            std::string_view levelData = data;
+            if (!looksLikePlainLevel(levelData)) {
+                auto decompressed = decompressLevel(data, job);
+                if (!decompressed) {
+                    result.error = "Could not decompress this level's saved data.";
+                    job->progress.store(1.f, std::memory_order_relaxed);
+                    job->stage.store(4, std::memory_order_relaxed);
+                    return result;
+                }
+                unpacked = std::move(*decompressed);
+                levelData = unpacked;
+            }
+
+            if (job->cancelled.load(std::memory_order_relaxed)) return result;
+
+            auto const headerEnd = levelData.find(';');
+            auto const header = levelData.substr(0, headerEnd);
             auto const channels = parseStartColors(header, histogram);
 
             job->stage.store(1, std::memory_order_relaxed);
-            job->progress.store(0.08f, std::memory_order_relaxed);
+            job->progress.store(0.12f, std::memory_order_relaxed);
 
             size_t objectCount = 0;
-            size_t position = headerEnd == std::string::npos ? data.size() : headerEnd + 1;
+            size_t position = headerEnd == std::string_view::npos ? levelData.size() : headerEnd + 1;
             size_t nextProgressAt = position;
 
-            while (position < data.size() && !job->cancelled.load(std::memory_order_relaxed)) {
-                auto end = data.find(';', position);
-                if (end == std::string::npos) end = data.size();
-                auto const object = std::string_view(data).substr(position, end - position);
+            while (position < levelData.size() && !job->cancelled.load(std::memory_order_relaxed)) {
+                auto end = levelData.find(';', position);
+                if (end == std::string_view::npos) end = levelData.size();
+                auto const object = levelData.substr(position, end - position);
 
                 int red = -1;
                 int green = -1;
@@ -383,12 +453,21 @@ namespace cleanfeed::smart_contrast {
                 position = end + 1;
 
                 if (position >= nextProgressAt) {
-                    auto const fraction = data.empty()
+                    auto const fraction = levelData.empty()
                         ? 1.0
-                        : static_cast<double>(position) / static_cast<double>(data.size());
-                    job->progress.store(static_cast<float>(0.08 + 0.62 * fraction), std::memory_order_relaxed);
+                        : static_cast<double>(position) / static_cast<double>(levelData.size());
+                    job->progress.store(static_cast<float>(0.12 + 0.58 * fraction), std::memory_order_relaxed);
                     nextProgressAt = position + 65536;
                 }
+            }
+
+            if (job->cancelled.load(std::memory_order_relaxed)) return result;
+
+            if (objectCount == 0) {
+                result.error = "No level objects were found after decompression.";
+                job->progress.store(1.f, std::memory_order_relaxed);
+                job->stage.store(4, std::memory_order_relaxed);
+                return result;
             }
 
             for (auto const& [channel, usage] : channelUse) {
@@ -458,7 +537,10 @@ namespace cleanfeed::smart_contrast {
                 candidates.reserve(72);
                 for (int hue = 0; hue < 360; hue += 5) {
                     auto const color = gamutMappedLch(lightness, chroma, static_cast<double>(hue));
-                    auto const preference = (std::cos((hue - preferredHue) * pi / 180.0) + 1.0) * 0.18;
+                    // Contrast stays the main criterion. This complementary-hue
+                    // preference is strong enough for different levels to stop
+                    // collapsing to the same RGB choices.
+                    auto const preference = (std::cos((hue - preferredHue) * pi / 180.0) + 1.0) * 0.75;
                     candidates.push_back({color, static_cast<double>(hue), visibilityScore(color) + preference});
                 }
                 std::sort(candidates.begin(), candidates.end(), [](auto const& lhs, auto const& rhs) {
@@ -510,7 +592,6 @@ namespace cleanfeed::smart_contrast {
             job->progress.store(0.9f, std::memory_order_relaxed);
 
             auto const oppositeHue = std::fmod(dominantHue + 180.0, 360.0);
-            AnalysisResult result;
             result.palettes[0] = buildPalette(levelIsDark ? 0.82 : 0.34, 0.20, oppositeHue, false);
             result.palettes[1] = buildPalette(levelIsDark ? 0.75 : 0.40, 0.13, std::fmod(oppositeHue + 70.0, 360.0), false);
             result.palettes[2] = buildPalette(levelIsDark ? 0.94 : 0.20, 0.25, std::fmod(oppositeHue + 290.0, 360.0), true);
@@ -532,7 +613,9 @@ namespace cleanfeed::smart_contrast {
         }
 
         std::string cacheKey(uint64_t hash) {
-            return fmt::format("smart-contrast-cache-{:016x}", hash);
+            // Ignore v1 palettes: that analyzer treated compressed k4 data as
+            // an empty plaintext level and cached its fallback colors.
+            return fmt::format("smart-contrast-cache-v2-{:016x}", hash);
         }
 
         int64_t packColor(Rgb color) {
@@ -553,7 +636,7 @@ namespace cleanfeed::smart_contrast {
         void saveCache(uint64_t hash, AnalysisResult const& result) {
             std::vector<int64_t> values;
             values.reserve(28);
-            values.push_back(1);
+            values.push_back(2);
             values.push_back(static_cast<int64_t>(result.objectCount));
             values.push_back(static_cast<int64_t>(result.sampledColors));
             for (auto const& palette : result.palettes) {
@@ -566,7 +649,7 @@ namespace cleanfeed::smart_contrast {
             auto const key = cacheKey(hash);
             if (!Mod::get()->hasSavedValue(key)) return std::nullopt;
             auto const values = Mod::get()->getSavedValue<std::vector<int64_t>>(key);
-            if (values.size() != 27 || values.front() != 1) return std::nullopt;
+            if (values.size() != 27 || values.front() != 2) return std::nullopt;
 
             AnalysisResult result;
             result.objectCount = static_cast<size_t>(std::max<int64_t>(values[1], 0));
@@ -666,7 +749,13 @@ namespace cleanfeed::smart_contrast {
                 this->setTitle("Smart Contrast");
 
                 auto* subtitle = CCLabelBMFont::create(
-                    fmt::format("{}  -  {} objects{}", m_levelName, m_result.objectCount, cached ? "  (cached)" : "").c_str(),
+                    fmt::format(
+                        "{}  -  {} objects, {} color samples{}",
+                        m_levelName,
+                        m_result.objectCount,
+                        m_result.sampledColors,
+                        cached ? "  (cached)" : ""
+                    ).c_str(),
                     "bigFont.fnt"
                 );
                 subtitle->setScale(.38f);
@@ -800,7 +889,7 @@ namespace cleanfeed::smart_contrast {
                 levelLabel->limitLabelWidth(320.f, .5f, .25f);
                 m_mainLayer->addChildAtPosition(levelLabel, Anchor::Center, ccp(0, 37));
 
-                m_stageLabel = CCLabelBMFont::create("Reading level data...", "bigFont.fnt");
+                m_stageLabel = CCLabelBMFont::create("Preparing saved level...", "bigFont.fnt");
                 m_stageLabel->setScale(.38f);
                 m_mainLayer->addChildAtPosition(m_stageLabel, Anchor::Center, ccp(0, 7));
 
@@ -826,7 +915,14 @@ namespace cleanfeed::smart_contrast {
                 auto job = m_job;
                 auto data = m_levelData;
                 m_worker = std::jthread([job, data = std::move(data)]() mutable {
-                    auto result = analyzeLevel(data, job);
+                    AnalysisResult result;
+                    try {
+                        result = analyzeLevel(data, job);
+                    } catch (std::exception const&) {
+                        result.error = "Unexpected error while reading this level.";
+                    } catch (...) {
+                        result.error = "Unexpected error while reading this level.";
+                    }
                     if (job->cancelled.load(std::memory_order_acquire)) return;
                     {
                         std::lock_guard lock(job->resultMutex);
@@ -845,7 +941,7 @@ namespace cleanfeed::smart_contrast {
                 m_progressLabel->setString(fmt::format("{}%", static_cast<int>(std::lround(progress * 100.f))).c_str());
 
                 constexpr std::array<char const*, 5> stages = {
-                    "Reading level data...",
+                    "Decompressing saved level...",
                     "Mapping colors and objects...",
                     "Scoring contrast...",
                     "Building three palettes...",
@@ -863,13 +959,23 @@ namespace cleanfeed::smart_contrast {
                     }
                     if (!result) return;
 
-                    saveCache(m_hash, *result);
+                    auto error = result->error;
                     auto levelName = m_levelName;
                     auto levelData = std::move(m_levelData);
                     auto hash = m_hash;
                     this->unschedule(schedule_selector(AnalysisPopup::updateProgress));
                     this->onClose(nullptr);
-                    PalettePopup::create(std::move(levelName), std::move(levelData), hash, std::move(*result), false)->show();
+                    if (!error.empty()) {
+                        FLAlertLayer::create("Smart Contrast", error.c_str(), "OK")->show();
+                        return;
+                    }
+
+                    saveCache(hash, *result);
+                    if (auto* popup = PalettePopup::create(
+                        std::move(levelName), std::move(levelData), hash, std::move(*result), false
+                    )) {
+                        popup->show();
+                    }
                 }
             }
 
