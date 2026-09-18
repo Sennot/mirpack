@@ -241,6 +241,116 @@ namespace cleanfeed::smart_contrast {
             return result.ec == std::errc{} && result.ptr == end;
         }
 
+        bool parseDouble(std::string_view value, double& output) {
+            if (value.empty()) return false;
+            auto const begin = value.data();
+            auto const end = value.data() + value.size();
+            auto const result = std::from_chars(begin, end, output);
+            return result.ec == std::errc{} && result.ptr == end && std::isfinite(output);
+        }
+
+        struct HsvShift {
+            double hue = 0.0;
+            double saturation = 1.0;
+            double value = 1.0;
+            bool addSaturation = false;
+            bool addValue = false;
+            bool valid = false;
+        };
+
+        HsvShift parseHsv(std::string_view encoded) {
+            HsvShift shift;
+            std::array<std::string_view, 5> fields{};
+            size_t count = 0;
+            size_t position = 0;
+            while (position <= encoded.size() && count < fields.size()) {
+                auto end = encoded.find('a', position);
+                if (end == std::string_view::npos) end = encoded.size();
+                fields[count++] = encoded.substr(position, end - position);
+                if (end == encoded.size()) break;
+                position = end + 1;
+            }
+
+            int addSaturation = 0;
+            int addValue = 0;
+            if (
+                count != fields.size() ||
+                !parseDouble(fields[0], shift.hue) ||
+                !parseDouble(fields[1], shift.saturation) ||
+                !parseDouble(fields[2], shift.value) ||
+                !parseInt(fields[3], addSaturation) ||
+                !parseInt(fields[4], addValue)
+            ) {
+                return {};
+            }
+
+            shift.addSaturation = addSaturation != 0;
+            shift.addValue = addValue != 0;
+            shift.valid = true;
+            return shift;
+        }
+
+        std::array<double, 3> rgbToHsv(Rgb color) {
+            auto const r = static_cast<double>(color.r) / 255.0;
+            auto const g = static_cast<double>(color.g) / 255.0;
+            auto const b = static_cast<double>(color.b) / 255.0;
+            auto const maximum = std::max({r, g, b});
+            auto const minimum = std::min({r, g, b});
+            auto const chroma = maximum - minimum;
+
+            double hue = 0.0;
+            if (chroma > 1e-9) {
+                if (maximum == r) hue = 60.0 * std::fmod((g - b) / chroma, 6.0);
+                else if (maximum == g) hue = 60.0 * ((b - r) / chroma + 2.0);
+                else hue = 60.0 * ((r - g) / chroma + 4.0);
+                if (hue < 0.0) hue += 360.0;
+            }
+
+            auto const saturation = maximum <= 1e-9 ? 0.0 : chroma / maximum;
+            return {hue, saturation, maximum};
+        }
+
+        Rgb hsvToRgb(double hue, double saturation, double value) {
+            hue = std::fmod(hue, 360.0);
+            if (hue < 0.0) hue += 360.0;
+            saturation = std::clamp(saturation, 0.0, 1.0);
+            value = std::clamp(value, 0.0, 1.0);
+
+            auto const chroma = value * saturation;
+            auto const section = hue / 60.0;
+            auto const x = chroma * (1.0 - std::abs(std::fmod(section, 2.0) - 1.0));
+            auto const offset = value - chroma;
+            double r = 0.0;
+            double g = 0.0;
+            double b = 0.0;
+
+            if (section < 1.0) { r = chroma; g = x; }
+            else if (section < 2.0) { r = x; g = chroma; }
+            else if (section < 3.0) { g = chroma; b = x; }
+            else if (section < 4.0) { g = x; b = chroma; }
+            else if (section < 5.0) { r = x; b = chroma; }
+            else { r = chroma; b = x; }
+
+            return {
+                static_cast<uint8_t>(std::lround((r + offset) * 255.0)),
+                static_cast<uint8_t>(std::lround((g + offset) * 255.0)),
+                static_cast<uint8_t>(std::lround((b + offset) * 255.0)),
+            };
+        }
+
+        Rgb applyHsv(Rgb color, HsvShift const& shift) {
+            if (!shift.valid) return color;
+            auto hsv = rgbToHsv(color);
+            hsv[0] += shift.hue;
+            hsv[1] = shift.addSaturation
+                ? hsv[1] + shift.saturation
+                : hsv[1] * shift.saturation;
+            hsv[2] = shift.addValue
+                ? hsv[2] + shift.value
+                : hsv[2] * shift.value;
+            return hsvToRgb(hsv[0], hsv[1], hsv[2]);
+        }
+
         template <class Callback>
         void visitPairs(std::string_view input, char separator, Callback&& callback) {
             size_t position = 0;
@@ -258,73 +368,233 @@ namespace cleanfeed::smart_contrast {
             }
         }
 
-        std::unordered_map<int, Rgb> parseStartColors(std::string_view start, Histogram& histogram) {
+        struct ChannelColor {
+            Rgb from{255, 255, 255};
+            Rgb to{255, 255, 255};
+            int id = -1;
+            int copyId = 0;
+            int playerColor = -1;
+            double fromOpacity = 1.0;
+            double toOpacity = 1.0;
+            bool hasTo = false;
+            bool copyOpacity = false;
+            bool blending = false;
+            HsvShift copyHsv;
+        };
+
+        struct ResolvedColor {
+            Rgb from{255, 255, 255};
+            Rgb to{255, 255, 255};
+            double fromOpacity = 1.0;
+            double toOpacity = 1.0;
+            bool hasTo = false;
+            bool blending = false;
+        };
+
+        using ChannelMap = std::unordered_map<int, ChannelColor>;
+
+        ChannelMap parseStartColors(std::string_view start) {
             std::string_view encodedColors;
             visitPairs(start, ',', [&](std::string_view key, std::string_view value) {
                 if (key == "kS38") encodedColors = value;
             });
 
-            std::unordered_map<int, Rgb> channels;
+            ChannelMap channels;
+            channels.reserve(128);
             size_t position = 0;
             while (position < encodedColors.size()) {
                 auto end = encodedColors.find('|', position);
                 if (end == std::string_view::npos) end = encodedColors.size();
                 auto const encoded = encodedColors.substr(position, end - position);
 
-                int red = -1;
-                int green = -1;
-                int blue = -1;
-                int targetRed = -1;
-                int targetGreen = -1;
-                int targetBlue = -1;
-                int channel = -1;
-                double opacity = 1.0;
+                ChannelColor channel;
+                std::string_view hsvText;
+                bool hasTargetRed = false;
+                bool hasTargetGreen = false;
+                bool hasTargetBlue = false;
 
                 visitPairs(encoded, '_', [&](std::string_view keyText, std::string_view valueText) {
                     int key = 0;
                     int value = 0;
                     if (!parseInt(keyText, key)) return;
 
-                    if (key == 7 || key == 15) {
-                        try {
-                            opacity = std::clamp(std::stod(std::string(valueText)), 0.0, 1.0);
-                        } catch (...) {
-                        }
+                    double decimal = 0.0;
+                    if (key == 7 && parseDouble(valueText, decimal)) {
+                        channel.fromOpacity = std::clamp(decimal, 0.0, 1.0);
+                        return;
+                    }
+                    if (key == 15 && parseDouble(valueText, decimal)) {
+                        channel.toOpacity = std::clamp(decimal, 0.0, 1.0);
+                        return;
+                    }
+                    if (key == 10) {
+                        hsvText = valueText;
                         return;
                     }
                     if (!parseInt(valueText, value)) return;
 
                     switch (key) {
-                        case 1: red = value; break;
-                        case 2: green = value; break;
-                        case 3: blue = value; break;
-                        case 6: channel = value; break;
-                        case 11: targetRed = value; break;
-                        case 12: targetGreen = value; break;
-                        case 13: targetBlue = value; break;
+                        case 1: channel.from.r = static_cast<uint8_t>(std::clamp(value, 0, 255)); break;
+                        case 2: channel.from.g = static_cast<uint8_t>(std::clamp(value, 0, 255)); break;
+                        case 3: channel.from.b = static_cast<uint8_t>(std::clamp(value, 0, 255)); break;
+                        case 4: channel.playerColor = value; break;
+                        case 5: channel.blending = value != 0; break;
+                        case 6: channel.id = value; break;
+                        case 9: channel.copyId = value; break;
+                        case 11:
+                            channel.to.r = static_cast<uint8_t>(std::clamp(value, 0, 255));
+                            hasTargetRed = true;
+                            break;
+                        case 12:
+                            channel.to.g = static_cast<uint8_t>(std::clamp(value, 0, 255));
+                            hasTargetGreen = true;
+                            break;
+                        case 13:
+                            channel.to.b = static_cast<uint8_t>(std::clamp(value, 0, 255));
+                            hasTargetBlue = true;
+                            break;
+                        case 17: channel.copyOpacity = value != 0; break;
                         default: break;
                     }
                 });
 
-                auto add = [&](int r, int g, int b, double weight) {
-                    if (r < 0 || g < 0 || b < 0) return;
-                    Rgb color {
-                        static_cast<uint8_t>(std::clamp(r, 0, 255)),
-                        static_cast<uint8_t>(std::clamp(g, 0, 255)),
-                        static_cast<uint8_t>(std::clamp(b, 0, 255)),
-                    };
-                    histogram.add(color, weight * std::max(opacity, 0.1));
-                    if (channel >= 0) channels[channel] = color;
-                };
-
-                auto const baseWeight = channel == 1000 ? 180.0 :
-                    (channel == 1001 || channel == 1009 ? 90.0 : 15.0);
-                add(red, green, blue, baseWeight);
-                add(targetRed, targetGreen, targetBlue, baseWeight * 0.35);
+                channel.hasTo = hasTargetRed && hasTargetGreen && hasTargetBlue;
+                if (!channel.hasTo) {
+                    channel.to = channel.from;
+                    channel.toOpacity = channel.fromOpacity;
+                }
+                channel.copyHsv = parseHsv(hsvText);
+                if (channel.id >= 0) channels[channel.id] = channel;
 
                 position = end + 1;
             }
             return channels;
+        }
+
+        std::optional<ResolvedColor> resolveChannel(
+            int id,
+            ChannelMap const& channels,
+            std::unordered_set<int>& resolving,
+            int depth = 0
+        ) {
+            if (id <= 0 || depth >= 8 || resolving.contains(id)) return std::nullopt;
+            if (id == 1010) return ResolvedColor{{0, 0, 0}, {0, 0, 0}};
+            if (id == 1011) return ResolvedColor{{255, 255, 255}, {255, 255, 255}};
+
+            auto found = channels.find(id);
+            if (found == channels.end()) {
+                // Undefined channels render white in the game. Player colors
+                // cannot be known from the level string, so they are omitted.
+                if (id == 1005 || id == 1006) return std::nullopt;
+                return ResolvedColor{};
+            }
+
+            auto const& channel = found->second;
+            if (channel.playerColor > 0) return std::nullopt;
+            if (channel.copyId == 0) {
+                return ResolvedColor{
+                    channel.from,
+                    channel.to,
+                    channel.fromOpacity,
+                    channel.toOpacity,
+                    channel.hasTo,
+                    channel.blending,
+                };
+            }
+
+            resolving.insert(id);
+            auto parent = resolveChannel(channel.copyId, channels, resolving, depth + 1);
+            resolving.erase(id);
+            if (!parent) return std::nullopt;
+
+            parent->from = applyHsv(parent->from, channel.copyHsv);
+            parent->to = applyHsv(parent->to, channel.copyHsv);
+            if (!channel.copyOpacity) {
+                parent->fromOpacity = channel.fromOpacity;
+                parent->toOpacity = channel.hasTo ? channel.toOpacity : channel.fromOpacity;
+            }
+            parent->blending = channel.blending;
+            return parent;
+        }
+
+        double startChannelWeight(int id) {
+            switch (id) {
+                case 1000: return 260.0; // BG fills most of the frame.
+                case 1001:
+                case 1009: return 110.0; // Ground layers.
+                case 1013:
+                case 1014: return 75.0;  // Middleground layers.
+                case 1002: return 45.0;  // Ground line.
+                case 1003:
+                case 1004: return 30.0;  // Common object colors.
+                default: return 0.3;     // Keep unused custom channels negligible.
+            }
+        }
+
+        void addResolvedColor(
+            Histogram& histogram,
+            ResolvedColor const& color,
+            double weight,
+            HsvShift const& hsv = {}
+        ) {
+            auto blendBoost = color.blending ? 1.12 : 1.0;
+            histogram.add(
+                applyHsv(color.from, hsv),
+                weight * std::clamp(color.fromOpacity, 0.0, 1.0) * blendBoost
+            );
+            if (color.hasTo) {
+                histogram.add(
+                    applyHsv(color.to, hsv),
+                    weight * 0.45 * std::clamp(color.toOpacity, 0.0, 1.0) * blendBoost
+                );
+            }
+        }
+
+        bool isColorTrigger(int id) {
+            switch (id) {
+                case 29:
+                case 30:
+                case 104:
+                case 105:
+                case 221:
+                case 717:
+                case 718:
+                case 743:
+                case 744:
+                case 899:
+                case 900:
+                case 915: return true;
+                default: return false;
+            }
+        }
+
+        int defaultColorTriggerTarget(int id) {
+            switch (id) {
+                case 29: return 1000;
+                case 30: return 1001;
+                case 104: return 1002;
+                case 105: return 1004;
+                case 221: return 1;
+                case 717: return 2;
+                case 718: return 3;
+                case 743: return 4;
+                case 744: return 1003;
+                default: return 1;
+            }
+        }
+
+        int modernChannelFromLegacy(int id) {
+            switch (id) {
+                case 1: return 1005;
+                case 2: return 1006;
+                case 3: return 1;
+                case 4: return 2;
+                case 5: return 1007;
+                case 6: return 3;
+                case 7: return 4;
+                case 8: return 1003;
+                default: return -1;
+            }
         }
 
         bool looksLikePlainLevel(std::string_view data) {
@@ -379,7 +649,6 @@ namespace cleanfeed::smart_contrast {
         AnalysisResult analyzeLevel(std::string const& data, std::shared_ptr<AnalysisJob> const& job) {
             AnalysisResult result;
             Histogram histogram;
-            std::unordered_map<int, double> channelUse;
 
             job->stage.store(0, std::memory_order_relaxed);
             job->progress.store(0.01f, std::memory_order_relaxed);
@@ -402,7 +671,40 @@ namespace cleanfeed::smart_contrast {
 
             auto const headerEnd = levelData.find(';');
             auto const header = levelData.substr(0, headerEnd);
-            auto const channels = parseStartColors(header, histogram);
+            auto const channels = parseStartColors(header);
+
+            std::unordered_map<int, ResolvedColor> resolvedChannels;
+            std::unordered_set<int> unavailableChannels;
+            resolvedChannels.reserve(channels.size() + 16);
+            unavailableChannels.reserve(16);
+            for (auto const& [id, channel] : channels) {
+                (void)channel;
+                std::unordered_set<int> resolving;
+                if (auto resolved = resolveChannel(id, channels, resolving)) {
+                    resolvedChannels.emplace(id, *resolved);
+                } else {
+                    unavailableChannels.insert(id);
+                }
+            }
+
+            auto getResolved = [&](int id) -> std::optional<ResolvedColor> {
+                if (id <= 0) return std::nullopt;
+                if (unavailableChannels.contains(id)) return std::nullopt;
+                if (auto found = resolvedChannels.find(id); found != resolvedChannels.end()) {
+                    return found->second;
+                }
+                std::unordered_set<int> resolving;
+                auto resolved = resolveChannel(id, channels, resolving);
+                if (resolved) resolvedChannels.emplace(id, *resolved);
+                else unavailableChannels.insert(id);
+                return resolved;
+            };
+
+            // Initial scene colors are always visible even when no ordinary
+            // object explicitly serializes their channel IDs.
+            for (auto const& [id, color] : resolvedChannels) {
+                addResolvedColor(histogram, color, startChannelWeight(id));
+            }
 
             job->stage.store(1, std::memory_order_relaxed);
             job->progress.store(0.12f, std::memory_order_relaxed);
@@ -419,35 +721,145 @@ namespace cleanfeed::smart_contrast {
                 int red = -1;
                 int green = -1;
                 int blue = -1;
+                int objectId = 0;
                 int targetChannel = -1;
                 int mainChannel = -1;
                 int secondaryChannel = -1;
+                int legacyChannel = -1;
+                int copiedChannel = 0;
+                int pulseTarget = 0;
+                double scale = 1.0;
+                double duration = 0.0;
+                double pulseFadeIn = 0.0;
+                double pulseHold = 0.0;
+                double pulseFadeOut = 0.0;
+                bool mainHsvEnabled = false;
+                bool secondaryHsvEnabled = false;
+                bool pulseHsvMode = false;
+                bool pulseTargetsGroup = false;
+                std::string_view mainHsvText;
+                std::string_view secondaryHsvText;
+                std::string_view copiedHsvText;
 
                 visitPairs(object, ',', [&](std::string_view keyText, std::string_view valueText) {
                     int key = 0;
                     int value = 0;
-                    if (!parseInt(keyText, key) || !parseInt(valueText, value)) return;
+                    if (!parseInt(keyText, key)) return;
+
+                    double decimal = 0.0;
+                    switch (key) {
+                        case 10:
+                            if (parseDouble(valueText, decimal)) duration = std::max(0.0, decimal);
+                            return;
+                        case 32:
+                            if (parseDouble(valueText, decimal)) scale = std::abs(decimal);
+                            return;
+                        case 43: mainHsvText = valueText; return;
+                        case 44: secondaryHsvText = valueText; return;
+                        case 45:
+                            if (parseDouble(valueText, decimal)) pulseFadeIn = std::max(0.0, decimal);
+                            return;
+                        case 46:
+                            if (parseDouble(valueText, decimal)) pulseHold = std::max(0.0, decimal);
+                            return;
+                        case 47:
+                            if (parseDouble(valueText, decimal)) pulseFadeOut = std::max(0.0, decimal);
+                            return;
+                        case 49: copiedHsvText = valueText; return;
+                        default: break;
+                    }
+
+                    if (!parseInt(valueText, value)) return;
 
                     switch (key) {
+                        case 1: objectId = value; break;
                         case 7: red = value; break;
                         case 8: green = value; break;
                         case 9: blue = value; break;
+                        case 19: legacyChannel = value; break;
                         case 21: mainChannel = value; break;
                         case 22: secondaryChannel = value; break;
                         case 23: targetChannel = value; break;
+                        case 41: mainHsvEnabled = value != 0; break;
+                        case 42: secondaryHsvEnabled = value != 0; break;
+                        case 48: pulseHsvMode = value != 0; break;
+                        case 50: copiedChannel = value; break;
+                        case 51: pulseTarget = value; break;
+                        case 52: pulseTargetsGroup = value != 0; break;
                         default: break;
                     }
                 });
 
-                if (red >= 0 && green >= 0 && blue >= 0) {
-                    histogram.add({
-                        static_cast<uint8_t>(std::clamp(red, 0, 255)),
-                        static_cast<uint8_t>(std::clamp(green, 0, 255)),
-                        static_cast<uint8_t>(std::clamp(blue, 0, 255)),
-                    }, targetChannel == 1000 ? 18.0 : 5.0);
+                auto const colorTrigger = isColorTrigger(objectId);
+                auto const pulseTrigger = objectId == 1006;
+                auto const areaWeight = std::clamp(scale * scale, 0.2, 20.0);
+
+                if (auto modernLegacy = modernChannelFromLegacy(legacyChannel); modernLegacy > 0) {
+                    mainChannel = modernLegacy;
+                    secondaryChannel = -1;
                 }
-                if (mainChannel >= 0) channelUse[mainChannel] += 1.0;
-                if (secondaryChannel >= 0) channelUse[secondaryChannel] += 0.55;
+
+                auto sampleChannel = [&](int id, double weight, HsvShift const& hsv = HsvShift{}) {
+                    if (auto resolved = getResolved(id)) {
+                        addResolvedColor(histogram, *resolved, weight, hsv);
+                    }
+                };
+
+                // Actual object colors, including per-object HSV shifts. Scale
+                // approximates how much screen area a decoration can occupy.
+                if (!colorTrigger && !pulseTrigger) {
+                    if (mainChannel > 0) {
+                        sampleChannel(
+                            mainChannel,
+                            areaWeight,
+                            mainHsvEnabled ? parseHsv(mainHsvText) : HsvShift{}
+                        );
+                    } else {
+                        // Most omitted base colors inherit OBJ. Keep this at a
+                        // lower weight because object metadata is not serialized.
+                        sampleChannel(1004, areaWeight * 0.35);
+                    }
+                    if (secondaryChannel > 0) {
+                        sampleChannel(
+                            secondaryChannel,
+                            areaWeight * 0.58,
+                            secondaryHsvEnabled ? parseHsv(secondaryHsvText) : HsvShift{}
+                        );
+                    }
+                }
+
+                // Color triggers permanently change a channel until another
+                // trigger replaces it, so include both direct and copied colors.
+                if (colorTrigger) {
+                    if (targetChannel <= 0) targetChannel = defaultColorTriggerTarget(objectId);
+                    auto const triggerWeight = (targetChannel == 1000 ? 95.0 : 12.0) *
+                        (1.0 + std::min(duration, 5.0) * 0.08);
+                    if (copiedChannel > 0) {
+                        sampleChannel(copiedChannel, triggerWeight, parseHsv(copiedHsvText));
+                    } else if (red >= 0 && green >= 0 && blue >= 0) {
+                        histogram.add({
+                            static_cast<uint8_t>(std::clamp(red, 0, 255)),
+                            static_cast<uint8_t>(std::clamp(green, 0, 255)),
+                            static_cast<uint8_t>(std::clamp(blue, 0, 255)),
+                        }, triggerWeight);
+                    }
+                }
+
+                // Pulse colors are temporary, so their weight follows their
+                // fade/hold duration. Group pulses still contribute their RGB.
+                if (pulseTrigger) {
+                    auto const pulseDuration = pulseFadeIn + pulseHold + pulseFadeOut;
+                    auto const pulseWeight = 5.0 + std::min(pulseDuration, 8.0) * 2.0;
+                    if (pulseHsvMode && !pulseTargetsGroup && pulseTarget > 0) {
+                        sampleChannel(pulseTarget, pulseWeight, parseHsv(copiedHsvText));
+                    } else if (red >= 0 && green >= 0 && blue >= 0) {
+                        histogram.add({
+                            static_cast<uint8_t>(std::clamp(red, 0, 255)),
+                            static_cast<uint8_t>(std::clamp(green, 0, 255)),
+                            static_cast<uint8_t>(std::clamp(blue, 0, 255)),
+                        }, pulseWeight);
+                    }
+                }
 
                 ++objectCount;
                 position = end + 1;
@@ -470,12 +882,6 @@ namespace cleanfeed::smart_contrast {
                 return result;
             }
 
-            for (auto const& [channel, usage] : channelUse) {
-                if (auto found = channels.find(channel); found != channels.end()) {
-                    histogram.add(found->second, std::min(220.0, 2.0 * std::sqrt(usage)));
-                }
-            }
-
             if (histogram.samples == 0) {
                 histogram.add({24, 24, 32}, 1.0);
                 histogram.add({96, 96, 112}, 0.35);
@@ -487,43 +893,57 @@ namespace cleanfeed::smart_contrast {
             auto const dominant = histogram.dominant(96);
             double totalWeight = 0.0;
             double averageLuminance = 0.0;
-            double averageA = 0.0;
-            double averageB = 0.0;
+            double chromaticA = 0.0;
+            double chromaticB = 0.0;
+            double chromaticWeight = 0.0;
 
             for (auto const& sample : dominant) {
                 auto const lab = toLab(sample.rgb);
+                auto const chroma = std::hypot(lab.a, lab.b);
+                auto const chromaFactor = std::clamp(chroma / 0.12, 0.0, 1.0);
                 totalWeight += sample.weight;
                 averageLuminance += luminance(sample.rgb) * sample.weight;
-                averageA += lab.a * sample.weight;
-                averageB += lab.b * sample.weight;
+                chromaticA += lab.a * sample.weight * chromaFactor;
+                chromaticB += lab.b * sample.weight * chromaFactor;
+                chromaticWeight += sample.weight * chromaFactor;
             }
             if (totalWeight > 0.0) {
                 averageLuminance /= totalWeight;
-                averageA /= totalWeight;
-                averageB /= totalWeight;
             }
 
             constexpr double pi = 3.14159265358979323846;
-            auto dominantHue = std::atan2(averageB, averageA) * 180.0 / pi;
+            // Neutral levels have no meaningful complementary hue. A stable
+            // warm reference produces a comfortable cyan family for them.
+            auto dominantHue = chromaticWeight < totalWeight * 0.045
+                ? 15.0
+                : std::atan2(chromaticB, chromaticA) * 180.0 / pi;
             if (dominantHue < 0.0) dominantHue += 360.0;
             auto const levelIsDark = averageLuminance < 0.38;
 
             auto visibilityScore = [&](Rgb candidate) {
                 double weighted = 0.0;
                 double weight = 0.0;
-                double worstImportant = 21.0;
+                double worstImportant = 14.0;
                 auto const importantThreshold = totalWeight * 0.008;
+                auto const candidateLab = toLab(candidate);
 
                 for (auto const& sample : dominant) {
                     auto const contrast = contrastRatio(candidate, sample.rgb);
-                    weighted += std::min(contrast, 10.0) * sample.weight;
+                    auto const sampleLab = toLab(sample.rgb);
+                    auto const deltaL = (candidateLab.l - sampleLab.l) * 0.85;
+                    auto const deltaA = candidateLab.a - sampleLab.a;
+                    auto const deltaB = candidateLab.b - sampleLab.b;
+                    auto const distance = std::sqrt(deltaL * deltaL + deltaA * deltaA + deltaB * deltaB);
+                    auto const colorSeparation = 2.2 * std::clamp(distance / 0.28, 0.0, 1.0);
+                    auto const clarity = std::min(contrast, 10.0) + colorSeparation;
+                    weighted += clarity * sample.weight;
                     weight += sample.weight;
                     if (sample.weight >= importantThreshold) {
-                        worstImportant = std::min(worstImportant, contrast);
+                        worstImportant = std::min(worstImportant, clarity);
                     }
                 }
                 auto const average = weight > 0.0 ? weighted / weight : 1.0;
-                return 0.72 * average + 0.28 * std::min(worstImportant, 10.0);
+                return 0.72 * average + 0.28 * worstImportant;
             };
 
             auto buildPalette = [&](double lightness, double chroma, double preferredHue, bool maximum) {
@@ -613,9 +1033,8 @@ namespace cleanfeed::smart_contrast {
         }
 
         std::string cacheKey(uint64_t hash) {
-            // Ignore v1 palettes: that analyzer treated compressed k4 data as
-            // an empty plaintext level and cached its fallback colors.
-            return fmt::format("smart-contrast-cache-v2-{:016x}", hash);
+            // v3 adds copied channels, HSV, trigger colors and object-area weighting.
+            return fmt::format("smart-contrast-cache-v3-{:016x}", hash);
         }
 
         int64_t packColor(Rgb color) {
@@ -636,7 +1055,7 @@ namespace cleanfeed::smart_contrast {
         void saveCache(uint64_t hash, AnalysisResult const& result) {
             std::vector<int64_t> values;
             values.reserve(28);
-            values.push_back(2);
+            values.push_back(3);
             values.push_back(static_cast<int64_t>(result.objectCount));
             values.push_back(static_cast<int64_t>(result.sampledColors));
             for (auto const& palette : result.palettes) {
@@ -649,7 +1068,7 @@ namespace cleanfeed::smart_contrast {
             auto const key = cacheKey(hash);
             if (!Mod::get()->hasSavedValue(key)) return std::nullopt;
             auto const values = Mod::get()->getSavedValue<std::vector<int64_t>>(key);
-            if (values.size() != 27 || values.front() != 2) return std::nullopt;
+            if (values.size() != 27 || values.front() != 3) return std::nullopt;
 
             AnalysisResult result;
             result.objectCount = static_cast<size_t>(std::max<int64_t>(values[1], 0));
