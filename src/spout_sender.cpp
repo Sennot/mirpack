@@ -386,7 +386,7 @@ namespace cleanfeed {
         auto const height = static_cast<unsigned int>(std::max(0, viewport[3]));
         if (!width || !height) return;
 
-        auto const desiredName = settings::senderName();
+        auto const& desiredName = settings::senderName();
         if (desiredName != m_senderName) {
             releaseSender();
             m_senderName = desiredName;

@@ -5,15 +5,11 @@
 #include <Geode/Geode.hpp>
 
 #include "checkpoint/checkpoint.hpp"
+#include "overlay_draw_node.hpp"
 
 #include <unordered_set>
 
 namespace cleanfeed {
-    class TrajectoryDrawNode final : public cocos2d::CCDrawNode {
-    public:
-        static TrajectoryDrawNode* create();
-    };
-
     class Trajectory final {
     public:
         enum Mode {
@@ -102,8 +98,8 @@ namespace cleanfeed {
 
         GJBaseGameLayer* m_layer = nullptr;
         geode::WeakRef<GJBaseGameLayer> m_layerLifetime;
-        TrajectoryDrawNode* m_node = nullptr;
-        geode::WeakRef<TrajectoryDrawNode> m_nodeLifetime;
+        OverlayDrawNode* m_node = nullptr;
+        geode::WeakRef<OverlayDrawNode> m_nodeLifetime;
         PlayerObject* m_fakePlayer1 = nullptr;
         PlayerObject* m_fakePlayer2 = nullptr;
         std::unordered_set<uintptr_t> m_activatedObjectsP1;

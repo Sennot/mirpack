@@ -109,17 +109,6 @@ namespace cleanfeed {
         }
     }
 
-    TrajectoryDrawNode* TrajectoryDrawNode::create() {
-        auto* result = new TrajectoryDrawNode();
-        if (result && result->init()) {
-            result->autorelease();
-            result->m_bUseArea = false;
-            return result;
-        }
-        CC_SAFE_DELETE(result);
-        return nullptr;
-    }
-
     Trajectory& Trajectory::get() {
         static Trajectory instance;
         return instance;
@@ -148,7 +137,7 @@ namespace cleanfeed {
 
         m_layer = layer;
         m_layerLifetime = layer;
-        m_node = TrajectoryDrawNode::create();
+        m_node = OverlayDrawNode::create(settings::showTrajectory);
         if (!m_node) {
             m_layer = nullptr;
             m_layerLifetime = nullptr;
@@ -400,7 +389,10 @@ namespace cleanfeed {
         bool playerDone = false;
         bool otherDone = false;
 
-        for (int index = 0; index < iterations && (!playerDone || (both && !otherDone)); ++index) {
+        // Once all active players finish, the remaining iterations do no work.
+        // Check dual mode each time: a simulated portal can change it.
+        for (int index = 0; index < iterations &&
+            (!playerDone || (both && layer->m_gameState.m_isDualMode && !otherDone)); ++index) {
             if (!playerDone) playerDone = iterate(layer, player, mode | playerMask, color, playerSteps);
             if (both && layer->m_gameState.m_isDualMode && !otherDone) {
                 otherDone = iterate(layer, other, mode | Player2, inverse, otherSteps);
@@ -453,9 +445,9 @@ namespace cleanfeed {
         if (!player || !m_node || !m_layer) return;
         auto const zoom = std::max(0.01f, m_layer->m_gameState.m_cameraZoom);
         auto const width = settings::hitboxWidth() / zoom;
-        auto const outerColor = settings::color("player-color");
-        auto const innerColor = settings::color("player-inner-color");
-        auto const rotatedColor = settings::color("player-rotated-color");
+        auto const outerColor = settings::color(settings::Color::Player);
+        auto const innerColor = settings::color(settings::Color::PlayerInner);
+        auto const rotatedColor = settings::color(settings::Color::PlayerRotated);
         auto const outer = shrink(player->getObjectRect(), width);
         auto const inner = shrink(player->getObjectRect(0.3f, 0.3f), width);
         drawRotatedRect(m_node, outer, player->getRotation(), rotatedColor, width);
@@ -493,8 +485,8 @@ namespace cleanfeed {
             .length = settings::trajectoryLength(),
             .lineWidth = settings::trajectoryWidth(),
             .highPerformance = settings::highPerformanceTrajectory(),
-            .holdColor = settings::color("trajectory-hold-color"),
-            .releaseColor = settings::color("trajectory-release-color"),
+            .holdColor = settings::color(settings::Color::TrajectoryHold),
+            .releaseColor = settings::color(settings::Color::TrajectoryRelease),
         };
         auto const signature = computeSignature(layer, predictionSettings);
         if (m_calculated && signature == m_lastSignature) return;

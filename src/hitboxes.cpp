@@ -3,6 +3,7 @@
 #include "hitboxes.hpp"
 
 #include "overlay.hpp"
+#include "overlay_draw_node.hpp"
 #include "settings.hpp"
 
 #include <algorithm>
@@ -209,13 +210,15 @@ namespace cleanfeed::hitboxes {
         if (!layer || !root) return;
 
         s_layer = layer;
-        s_objectNode = cocos2d::CCDrawNode::create();
+        s_objectNode = OverlayDrawNode::create(settings::showHitboxes);
+        if (!s_objectNode) return;
         s_objectNode->m_bUseArea = false;
         s_objectNode->setBlendFunc({GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA});
         s_objectNode->setID("object-hitboxes"_spr);
         root->addChild(s_objectNode, 10);
 
-        s_playerNode = cocos2d::CCDrawNode::create();
+        s_playerNode = OverlayDrawNode::create(settings::showHitboxes);
+        if (!s_playerNode) return;
         s_playerNode->m_bUseArea = false;
         s_playerNode->setBlendFunc({GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA});
         s_playerNode->setID("player-hitboxes"_spr);
@@ -276,9 +279,9 @@ namespace cleanfeed::hitboxes {
         auto const now = Clock::now();
         if (s_objectsDirty || now >= s_nextObjectRefresh) {
             auto const started = now;
-            auto const solid = settings::color("solid-color");
-            auto const hazard = settings::color("hazard-color");
-            auto const interactable = settings::color("interactable-color");
+            auto const solid = settings::color(settings::Color::Solid);
+            auto const hazard = settings::color(settings::Color::Hazard);
+            auto const interactable = settings::color(settings::Color::Interactable);
             Palette const palette = {
                 .solid = solid,
                 .hazard = hazard,
@@ -302,9 +305,9 @@ namespace cleanfeed::hitboxes {
         }
 
         s_playerNode->clear();
-        auto const outer = settings::color("player-color");
-        auto const inner = settings::color("player-inner-color");
-        auto const rotated = settings::color("player-rotated-color");
+        auto const outer = settings::color(settings::Color::Player);
+        auto const inner = settings::color(settings::Color::PlayerInner);
+        auto const rotated = settings::color(settings::Color::PlayerRotated);
         PlayerPalette const playerPalette{
             .outer = outer,
             .inner = inner,

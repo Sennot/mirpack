@@ -3,9 +3,21 @@
 #include <Geode/Geode.hpp>
 
 namespace cleanfeed::settings {
+    enum class Color {
+        Solid,
+        Hazard,
+        Interactable,
+        Player,
+        PlayerInner,
+        PlayerRotated,
+        TrajectoryHold,
+        TrajectoryRelease,
+        Count,
+    };
+
     bool enabled();
     bool captureCursor();
-    std::string senderName();
+    std::string const& senderName();
     bool showHitboxes();
     bool showTrajectory();
     bool highPerformanceTrajectory();
@@ -15,6 +27,5 @@ namespace cleanfeed::settings {
     float hitboxWidth();
     float hitboxFillOpacity();
 
-    cocos2d::ccColor4F color(std::string_view key);
-    cocos2d::ccColor4F colorWithAlpha(std::string_view key, float alpha);
+    cocos2d::ccColor4F color(Color key);
 }

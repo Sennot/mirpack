@@ -1,6 +1,7 @@
 #include "overlay.hpp"
 
 #include "render_pass.hpp"
+#include "settings.hpp"
 
 using namespace geode::prelude;
 
@@ -56,6 +57,8 @@ namespace cleanfeed::overlay {
     }
 
     void drawForPlayer() {
+        if (!settings::showHitboxes() && !settings::showTrajectory()) return;
+
         // swapBuffers is global and may run once more after an editor/game
         // scene has released its nodes. Weak references make that transition
         // frame a no-op instead of dereferencing the former overlay root.
