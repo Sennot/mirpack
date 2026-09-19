@@ -5,13 +5,12 @@
 
 #include <Geode/Geode.hpp>
 #include <Geode/modify/CCDirector.hpp>
-#include <Geode/modify/CCScene.hpp>
+#include <Geode/modify/CCScheduler.hpp>
 
 #include <Windows.h>
 #include <Psapi.h>
 
 #include <algorithm>
-#include <limits>
 #include <typeinfo>
 #include <unordered_map>
 #include <vector>
@@ -26,16 +25,17 @@ namespace cleanfeed::xdbot_filter {
             Ref<CCNode> node;
             WeakRef<CCNode> parent;
             WeakRef<CCScene> scene;
-            kmMat4 modelView;
-            kmMat4 projection;
+            kmMat4 parentTransform;
         };
 
         std::vector<DeferredNode> s_deferred;
         std::vector<CCNode*> s_levelContainers;
+        std::vector<CCScene*> s_visitedScenes;
         std::unordered_map<std::type_info const*, NodeKind> s_types;
         uintptr_t s_moduleBegin = 0;
         uintptr_t s_moduleEnd = 0;
         unsigned int s_frameDepth = 0;
+        unsigned int s_updateDepth = 0;
         bool s_localPass = false;
 
         bool findModule() {
@@ -81,9 +81,28 @@ namespace cleanfeed::xdbot_filter {
             for (auto const& entry : s_deferred) entry.node->setVisible(true);
         }
 
-        void collectScene(CCScene* scene) {
-            if (!s_frameDepth || s_localPass || !settings::enabled() || !settings::hideXdbotUI() ||
-                !findModule()) return;
+        void restoreFrame() {
+            restoreVisibility();
+            s_deferred.clear();
+        }
+
+        bool collectScene(CCScene* scene, ui_visibility::TraversalBudget& budget, unsigned depth = 0) {
+            if (!scene || !scene->isVisible()) return true;
+            if (depth > 8) return false;
+            if (std::find(s_visitedScenes.begin(), s_visitedScenes.end(), scene) != s_visitedScenes.end()) {
+                return true;
+            }
+            s_visitedScenes.push_back(scene);
+
+            // Transition scenes render these separately; they are not children
+            // of the transition root. Preserve their native front/back order.
+            if (auto* transition = typeinfo_cast<CCTransitionScene*>(scene)) {
+                auto* first = transition->m_bIsInSceneOnTop ? transition->m_pOutScene : transition->m_pInScene;
+                auto* second = transition->m_bIsInSceneOnTop ? transition->m_pInScene : transition->m_pOutScene;
+                if (!collectScene(first, budget, depth + 1) || !collectScene(second, budget, depth + 1)) {
+                    return false;
+                }
+            }
 
             // Discover each layer in this scene, including the outgoing layer
             // during editor/play transitions after our gameplay overlay detached.
@@ -93,13 +112,8 @@ namespace cleanfeed::xdbot_filter {
                 return std::find(s_levelContainers.begin(), s_levelContainers.end(), node) !=
                     s_levelContainers.end();
             };
-            kmMat4 sceneView;
-            kmMat4 projection;
-            kmGLGetMatrix(KM_GL_MODELVIEW, &sceneView);
-            kmGLGetMatrix(KM_GL_PROJECTION, &projection);
-            auto const worldToScene = scene->worldToNodeTransform();
-
-            ui_visibility::collect<CCNode>(scene,
+            bool validParents = true;
+            auto const complete = ui_visibility::collect<CCNode>(scene,
                 [isLevelContainer](CCNode* node) {
                     // Never classify the actual level or its object container as
                     // UI, regardless of a third-party ID or subclass.
@@ -116,51 +130,47 @@ namespace cleanfeed::xdbot_filter {
                     return isLevelContainer(node) || kind(node) == NodeKind::Leaf;
                 },
                 [](CCNode* node) {
-                    node->sortAllChildren();
+                    // In particular, do not change child zero of a CCScene.
+                    // GD and other mods can use it as the main menu/list layer.
                     return CCArrayExt<CCNode*>(node->getChildren());
                 },
                 [&](CCNode* node) {
                     auto* parent = node->getParent();
                     if (!parent) return;
-                    auto const parentToScene = CCAffineTransformConcat(
-                        parent->nodeToWorldTransform(), worldToScene
-                    );
-                    auto const relative = matrixFor(parentToScene);
-                    kmMat4 view;
-                    kmMat4Multiply(&view, &sceneView, &relative);
+                    // nodeToWorldTransform itself follows every parent. Check
+                    // that chain before invoking it on a third-party UI node.
+                    if (!ui_visibility::boundedParents(parent)) {
+                        validParents = false;
+                        return;
+                    }
                     // Retain only for this render pass; no nodes survive scene
                     // teardown through a persistent raw-pointer cache.
-                    s_deferred.push_back({node, parent, scene, view, projection});
+                    s_deferred.push_back({node, parent, scene, matrixFor(parent->nodeToWorldTransform())});
                     node->setVisible(false);
-                }
+                }, budget
             );
             s_levelContainers.clear();
+            return complete && validParents;
         }
 
-        class SceneBoundary final : public CCNode {
-        public:
-            static SceneBoundary* create() {
-                auto* result = new SceneBoundary;
-                if (result->init()) {
-                    result->autorelease();
-                    return result;
+        void prepareFrame(CCDirector* director) {
+            if (!s_frameDepth || s_updateDepth || s_localPass) return;
+            restoreFrame();
+            if (!settings::enabled() || !settings::hideXdbotUI() || !findModule()) return;
+            // setNextScene will prepare the new scene AFTER its onEnter hooks.
+            if (director->getNextScene()) return;
+            ui_visibility::TraversalBudget budget;
+            s_visitedScenes.clear();
+            auto const complete = collectScene(director->getRunningScene(), budget);
+            s_visitedScenes.clear();
+            s_levelContainers.clear();
+            if (!complete) {
+                restoreFrame();
+                static bool warned = false;
+                if (!warned) {
+                    log::warn("Spout xDBot filter skipped an oversized/deep UI tree; visibility restored");
+                    warned = true;
                 }
-                delete result;
-                return nullptr;
-            }
-
-            void visit() override {
-                collectScene(static_cast<CCScene*>(getParent()));
-            }
-        };
-
-        void attachBoundary(CCScene* scene) {
-            if (!scene || scene->getChildByID("xdbot-filter-boundary"_spr)) return;
-            if (auto* node = SceneBoundary::create()) {
-                node->setID("xdbot-filter-boundary"_spr);
-                // A negative boundary leaves getHighestChildZ() unchanged, so
-                // popup ordering and its highest-Z + 1 convention still work.
-                scene->addChild(node, std::numeric_limits<int>::min());
             }
         }
 
@@ -170,8 +180,7 @@ namespace cleanfeed::xdbot_filter {
             ~FrameScope() {
                 if (--s_frameDepth == 0) {
                     // Also restore if another renderer skipped swapBuffers.
-                    restoreVisibility();
-                    s_deferred.clear();
+                    restoreFrame();
                 }
             }
         };
@@ -184,6 +193,13 @@ namespace cleanfeed::xdbot_filter {
             ~LocalPassScope() { s_localPass = false; }
         } localPass;
         restoreVisibility();
+        // drawScene has now popped its scene matrix. Use the same base matrix
+        // as the ordinary player-only overlay, then apply each UI parent's
+        // world transform. No rendering or GL calls run in scheduler callbacks.
+        kmMat4 baseView;
+        kmMat4 projection;
+        kmGLGetMatrix(KM_GL_MODELVIEW, &baseView);
+        kmGLGetMatrix(KM_GL_PROJECTION, &projection);
         kmGLMatrixMode(KM_GL_PROJECTION);
         kmGLPushMatrix();
         kmGLMatrixMode(KM_GL_MODELVIEW);
@@ -194,10 +210,12 @@ namespace cleanfeed::xdbot_filter {
             auto scene = entry.scene.lock();
             if (!parent || !scene || entry.node->getParent() != parent.data() ||
                 !ui_visibility::visibleUnder<CCNode>(entry.node.data(), scene.data())) continue;
+            kmMat4 view;
+            kmMat4Multiply(&view, &baseView, &entry.parentTransform);
             kmGLMatrixMode(KM_GL_PROJECTION);
-            kmGLLoadMatrix(&entry.projection);
+            kmGLLoadMatrix(&projection);
             kmGLMatrixMode(KM_GL_MODELVIEW);
-            kmGLLoadMatrix(&entry.modelView);
+            kmGLLoadMatrix(&view);
             entry.node->visit();
         }
 
@@ -208,25 +226,43 @@ namespace cleanfeed::xdbot_filter {
         s_deferred.clear();
     }
 
-    class $modify(CleanFeedXdbotScene, CCScene) {
-        bool init() override {
-            if (!CCScene::init()) return false;
-            attachBoundary(this);
-            return true;
-        }
-    };
-
     class $modify(CleanFeedXdbotDirector, CCDirector) {
         void drawScene() {
             FrameScope frame;
-            // Covers a scene created before this mod's hooks were installed.
-            static WeakRef<CCScene> lastScene;
-            auto* scene = getRunningScene();
-            if (lastScene.lock().data() != scene) {
-                attachBoundary(scene);
-                lastScene = scene;
-            }
+            // A paused director skips the scheduler but still renders scenes.
+            if (isPaused()) prepareFrame(this);
             CCDirector::drawScene();
+        }
+
+        void setNextScene() {
+            if (s_frameDepth && !s_localPass) restoreFrame();
+            CCDirector::setNextScene();
+            prepareFrame(this);
+        }
+    };
+
+    class $modify(CleanFeedXdbotScheduler, CCScheduler) {
+        static void onModify(auto& self) {
+            // Outermost wrapper: defer UI only after other update hooks finish.
+            (void)self.setHookPriority("cocos2d::CCScheduler::update", geode::Priority::FirstPre);
+        }
+
+        void update(float dt) {
+            auto* director = CCDirector::sharedDirector();
+            auto const isMainScheduler = this == director->getScheduler();
+            auto const prepare = s_frameDepth && !s_localPass && isMainScheduler;
+            // Also covers renderers which run several updates before one frame:
+            // no scheduled game logic should observe our temporary visibility.
+            if (prepare) restoreFrame();
+            {
+                struct UpdateScope {
+                    bool active;
+                    explicit UpdateScope(bool value) : active(value) { if (active) ++s_updateDepth; }
+                    ~UpdateScope() { if (active) --s_updateDepth; }
+                } updateScope(isMainScheduler);
+                CCScheduler::update(dt);
+            }
+            if (prepare) prepareFrame(director);
         }
     };
 }

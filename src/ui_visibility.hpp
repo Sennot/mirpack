@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string_view>
 
 namespace cleanfeed::ui_visibility {
@@ -7,26 +8,55 @@ namespace cleanfeed::ui_visibility {
         return id.starts_with("zilko.xdbot/");
     }
 
-    // Visit only visible UI subtrees. Ownership is tested before leaf pruning:
-    // an owned label is a batch node, but its glyphs need not be inspected.
+    struct TraversalBudget {
+        std::size_t remaining = 4096;
+        std::size_t maxDepth = 64;
+    };
+
+    // Read-only tree traversal: never sort, insert or reparent scene children.
+    // A false result means the caller must restore ALL deferred visibility and
+    // leave this frame unfiltered, rather than freeze or partially hide UI.
     template <class Node, class Owned, class Prune, class Children, class Defer>
-    void collect(Node* node, Owned const& owned, Prune const& prune,
-                 Children const& children, Defer const& defer) {
-        if (!node || !node->isVisible()) return;
+    bool collect(Node* node, Owned const& owned, Prune const& prune,
+                 Children const& children, Defer const& defer,
+                 TraversalBudget& budget, std::size_t depth = 0) {
+        if (!budget.remaining || depth > budget.maxDepth) return false;
+        --budget.remaining;
+        if (!node || !node->isVisible()) return true;
         if (owned(node)) {
             defer(node);
-            return;
+            return true;
         }
-        if (prune(node)) return;
-        for (auto* child : children(node)) collect(child, owned, prune, children, defer);
+        if (prune(node)) return true;
+        for (auto* child : children(node)) {
+            if (!collect(child, owned, prune, children, defer, budget, depth + 1)) return false;
+        }
+        return true;
+    }
+
+    template <class Node, class Owned, class Prune, class Children, class Defer>
+    bool collect(Node* node, Owned const& owned, Prune const& prune,
+                 Children const& children, Defer const& defer) {
+        TraversalBudget budget;
+        return collect(node, owned, prune, children, defer, budget);
     }
 
     template <class Node>
     bool visibleUnder(Node* node, Node* root) {
-        for (auto* current = node; current; current = current->getParent()) {
+        std::size_t depth = 0;
+        for (auto* current = node; current && depth++ <= 64; current = current->getParent()) {
             if (!current->isVisible()) return false;
             if (current == root) return true;
         }
         return false;
+    }
+
+    template <class Node>
+    bool boundedParents(Node* node) {
+        std::size_t depth = 0;
+        for (auto* current = node; current; current = current->getParent()) {
+            if (++depth > 64) return false;
+        }
+        return true;
     }
 }
