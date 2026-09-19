@@ -16,6 +16,7 @@
 #include "physics/player.hpp"
 #include "spout_sender.hpp"
 #include "trajectory/trajectory.hpp"
+#include "xdbot_filter.hpp"
 
 using namespace geode::prelude;
 
@@ -57,6 +58,7 @@ namespace cleanfeed {
         void swapBuffers() override {
             SpoutSender::get().captureBackBuffer();
             overlay::drawForPlayer();
+            xdbot_filter::drawForPlayer();
             cocos2d::CCEGLView::swapBuffers();
         }
     };

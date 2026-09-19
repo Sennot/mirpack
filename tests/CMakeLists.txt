@@ -10,3 +10,8 @@ add_executable(overlay_settings_tests
 target_compile_features(overlay_settings_tests PRIVATE cxx_std_23)
 target_include_directories(overlay_settings_tests PRIVATE stubs ../src)
 add_test(NAME overlay_settings COMMAND overlay_settings_tests)
+
+add_executable(ui_visibility_tests ui_visibility_tests.cpp)
+target_compile_features(ui_visibility_tests PRIVATE cxx_std_23)
+target_include_directories(ui_visibility_tests PRIVATE ../src)
+add_test(NAME ui_visibility COMMAND ui_visibility_tests)

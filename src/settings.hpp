@@ -17,6 +17,7 @@ namespace cleanfeed::settings {
 
     bool enabled();
     bool captureCursor();
+    bool hideXdbotUI();
     std::string const& senderName();
     bool showHitboxes();
     bool showTrajectory();

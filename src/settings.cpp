@@ -18,6 +18,7 @@ namespace cleanfeed::settings {
         struct Cache {
             bool enabled;
             bool captureCursor;
+            bool hideXdbotUI;
             bool showHitboxes;
             bool showTrajectory;
             bool highPerformanceTrajectory;
@@ -35,6 +36,7 @@ namespace cleanfeed::settings {
             Cache value{};
             value.enabled = mod->getSettingValue<bool>("enabled");
             value.captureCursor = mod->getSettingValue<bool>("capture-cursor");
+            value.hideXdbotUI = mod->getSettingValue<bool>("hide-xdbot-ui");
             value.showHitboxes = mod->getSettingValue<bool>("show-hitboxes");
             value.showTrajectory = mod->getSettingValue<bool>("show-trajectory");
             value.highPerformanceTrajectory = mod->getSettingValue<bool>("high-performance-trajectory");
@@ -76,6 +78,10 @@ namespace cleanfeed::settings {
 
     bool captureCursor() {
         return cache().captureCursor;
+    }
+
+    bool hideXdbotUI() {
+        return cache().hideXdbotUI;
     }
 
     std::string const& senderName() {

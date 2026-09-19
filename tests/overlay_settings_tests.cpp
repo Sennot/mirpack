@@ -23,6 +23,7 @@ int main() {
         auto* mod = geode::Mod::get();
         mod->values = {
             {"enabled", true}, {"capture-cursor", true},
+            {"hide-xdbot-ui", true},
             {"show-hitboxes", true}, {"show-trajectory", true},
             {"high-performance-trajectory", true}, {"trajectory-tps", int64_t{240}},
             {"trajectory-length", 2.0}, {"trajectory-width", 0.65},
@@ -38,6 +39,9 @@ int main() {
 
         using namespace cleanfeed;
         require(settings::senderName() == "Saved custom sender", "Saved settings were not loaded");
+        require(settings::hideXdbotUI(), "xDBot filter default was not loaded");
+        mod->setSettingValue("hide-xdbot-ui", false);
+        require(!settings::hideXdbotUI(), "xDBot filter changes were not applied");
         require(settings::trajectoryTps() == 240 && settings::trajectoryLength() == 2.f,
             "Prediction defaults changed");
         registerTestKeybinds();
@@ -100,6 +104,7 @@ int main() {
         for (int frame = 0; frame < 10000; ++frame) {
             (void)settings::enabled();
             (void)settings::captureCursor();
+            (void)settings::hideXdbotUI();
             (void)settings::senderName();
             (void)settings::showHitboxes();
             (void)settings::showTrajectory();
