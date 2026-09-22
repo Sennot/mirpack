@@ -1,6 +1,7 @@
 // Physics/prediction behavior adapted from Silicate commit f183dbc5
 // (GPL-3.0). Bot, replay, renderer and UI coupling were removed.
 #include "trajectory.hpp"
+#include "visibility.hpp"
 
 #include "overlay.hpp"
 #include "physics/collisions.hpp"
@@ -465,7 +466,8 @@ namespace cleanfeed {
         m_fakePlayer1->setVisible(false);
         m_fakePlayer2->setVisible(false);
 
-        if (auto* editor = LevelEditorLayer::get(); editor && editor->m_playbackMode == PlaybackMode::Not) {
+        if (trajectory_visibility::suppressForIdleEditor(layer, LevelEditorLayer::get(),
+            [](LevelEditorLayer const& editor) { return editor.m_playbackMode == PlaybackMode::Not; })) {
             m_node->clear();
             m_node->setVisible(false);
             m_calculated = false;

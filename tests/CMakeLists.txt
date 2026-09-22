@@ -15,3 +15,8 @@ add_executable(ui_visibility_tests ui_visibility_tests.cpp)
 target_compile_features(ui_visibility_tests PRIVATE cxx_std_23)
 target_include_directories(ui_visibility_tests PRIVATE ../src)
 add_test(NAME ui_visibility COMMAND ui_visibility_tests)
+
+add_executable(trajectory_visibility_tests trajectory_visibility_tests.cpp)
+target_compile_features(trajectory_visibility_tests PRIVATE cxx_std_23)
+target_include_directories(trajectory_visibility_tests PRIVATE ../src)
+add_test(NAME trajectory_visibility COMMAND trajectory_visibility_tests)
